@@ -44,22 +44,6 @@ function defaultRenderMention({
   return null;
 }
 
-function renderImage({ src, alt }: { src: string; alt: string }): React.ReactNode {
-  return (
-    <AttachmentRenderer
-      attachment={{
-        kind: "url",
-        url: src,
-        filename: alt,
-        // chat / skill markdown `![]()` is structurally an image. Without
-        // forceKind, empty/descriptive alt strings would route to the
-        // file-card chrome via getPreviewKind autodetect.
-        forceKind: "image",
-      }}
-    />
-  );
-}
-
 function renderFileCard({
   href,
   filename,
@@ -84,7 +68,31 @@ function renderFileCard({
  */
 export function Markdown(props: MarkdownProps): React.JSX.Element {
   const cdnDomain = useConfigStore((s) => s.cdnDomain);
+  const apiBaseUrl = useConfigStore((s) => s.apiBaseUrl);
   const { attachments, ...rest } = props;
+
+  const renderImage = React.useCallback(
+    ({ src, alt }: { src: string; alt: string }): React.ReactNode => {
+      // Relative paths (e.g. /uploads/...) must be prefixed with the API base
+      // URL so the desktop app can load them without a browser to resolve them.
+      const resolvedSrc = src.startsWith("/") ? `${apiBaseUrl}${src}` : src;
+      return (
+        <AttachmentRenderer
+          attachment={{
+            kind: "url",
+            url: resolvedSrc,
+            filename: alt,
+            // chat / skill markdown `![]()` is structurally an image. Without
+            // forceKind, empty/descriptive alt strings would route to the
+            // file-card chrome via getPreviewKind autodetect.
+            forceKind: "image",
+          }}
+        />
+      );
+    },
+    [apiBaseUrl],
+  );
+
   return (
     <AttachmentDownloadProvider attachments={attachments}>
       <MarkdownBase
