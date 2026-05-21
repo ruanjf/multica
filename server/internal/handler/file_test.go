@@ -677,6 +677,79 @@ func TestGetStaticFileRedirect_UserPath(t *testing.T) {
 	}
 }
 
+// mockStorageLocal simulates a local/filesystem storage backend: no CDN domain,
+// Upload returns the raw key (not an absolute URL), and URLPresigner is not
+// implemented. This is the condition that triggers the direct-serve fallback.
+type mockStorageLocal struct {
+	mu    sync.Mutex
+	files map[string][]byte
+}
+
+func (m *mockStorageLocal) Upload(_ context.Context, key string, data []byte, _ string, _ string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.files == nil {
+		m.files = map[string][]byte{}
+	}
+	m.files[key] = append([]byte(nil), data...)
+	return key, nil
+}
+func (m *mockStorageLocal) Delete(_ context.Context, key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.files, key)
+}
+func (m *mockStorageLocal) DeleteKeys(_ context.Context, _ []string) {}
+func (m *mockStorageLocal) KeyFromURL(rawURL string) string           { return rawURL }
+func (m *mockStorageLocal) CdnDomain() string                         { return "" }
+func (m *mockStorageLocal) GetReader(_ context.Context, key string) (io.ReadCloser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if data, ok := m.files[key]; ok {
+		return io.NopCloser(bytes.NewReader(data)), nil
+	}
+	return nil, fmt.Errorf("mockStorageLocal GetReader: key not found: %q", key)
+}
+
+// TestGetStaticFileRedirect_NoCDNFallbackDirectServe verifies the fallback path:
+// when the storage backend has no CDN domain and does not implement URLPresigner,
+// rawURL is a relative key — not a valid redirect target. The handler must serve
+// the file content directly (200) instead of issuing a broken 302.
+func TestGetStaticFileRedirect_NoCDNFallbackDirectServe(t *testing.T) {
+	store := &mockStorageLocal{}
+	origStorage := testHandler.Storage
+	origCfg := testHandler.cfg
+	testHandler.Storage = store
+	testHandler.cfg.StaticDomain = ""
+	defer func() {
+		testHandler.Storage = origStorage
+		testHandler.cfg = origCfg
+	}()
+
+	wantContent := []byte("avatar-image-data")
+	filename := "00000000-0000-0000-0000-000000000abc.png"
+	key := "users/" + testUserID + "/" + filename
+	if _, err := store.Upload(context.Background(), key, wantContent, "image/png", filename); err != nil {
+		t.Fatalf("seed upload: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/users/"+testUserID+"/"+filename, nil)
+	req.Header.Set("X-User-ID", testUserID)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("userId", testUserID)
+	rctx.URLParams.Add("filename", filename)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	testHandler.GetStaticFileRedirect(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 direct serve, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Body.Bytes(); !bytes.Equal(got, wantContent) {
+		t.Fatalf("response body = %q, want %q", got, wantContent)
+	}
+}
+
 func TestIsTextPreviewable(t *testing.T) {
 	t.Helper()
 	cases := []struct {

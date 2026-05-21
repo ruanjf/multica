@@ -412,7 +412,8 @@ func (h *Handler) GetStaticFileRedirect(w http.ResponseWriter, r *http.Request) 
 
 	// key is the storage object key; rawURL is the un-signed base URL stored in
 	// DB (workspace files) or reconstructed from the CDN domain (user files).
-	var key, rawURL string
+	// contentType is set when the attachment record is available (workspace files).
+	var key, rawURL, contentType string
 
 	if workspaceID != "" {
 		// Workspace-scoped file: look up attachment in DB for access control.
@@ -441,6 +442,7 @@ func (h *Handler) GetStaticFileRedirect(w http.ResponseWriter, r *http.Request) 
 		}
 		rawURL = att.Url
 		key = h.Storage.KeyFromURL(rawURL)
+		contentType = att.ContentType
 	} else if userID != "" {
 		// User-scoped file (e.g. avatar): no DB record exists for these uploads.
 		// Any authenticated user may access user-scoped files (needed for
@@ -476,6 +478,28 @@ func (h *Handler) GetStaticFileRedirect(w http.ResponseWriter, r *http.Request) 
 	} else {
 		// Fallback: redirect to the raw URL (public bucket or local storage).
 		signedURL = rawURL
+	}
+
+	// If signedURL is not a valid absolute URL (e.g. local storage returns the
+	// raw key like "users/{id}/file.ext"), serve the file content directly
+	// instead of issuing a broken 302 redirect.
+	if !strings.HasPrefix(signedURL, "http://") && !strings.HasPrefix(signedURL, "https://") {
+		reader, err := h.Storage.GetReader(r.Context(), key)
+		if err != nil {
+			slog.Error("failed to open static file for direct serve", "key", key, "error", err)
+			writeError(w, http.StatusNotFound, "file not found")
+			return
+		}
+		defer reader.Close()
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "private, max-age=300")
+		if _, err := io.Copy(w, reader); err != nil {
+			slog.Error("failed to write static file response", "key", key, "error", err)
+		}
+		return
 	}
 
 	http.Redirect(w, r, signedURL, http.StatusFound)
