@@ -85,20 +85,17 @@ func (o *OSSStorage) CdnDomain() string {
 }
 
 // KeyFromURL extracts the OSS object key from a static-domain, CDN, or bucket URL.
+// Priority mirrors uploadedURL: staticDomain > cdnDomain > endpointURL > default.
 func (o *OSSStorage) KeyFromURL(rawURL string) string {
-	if o.endpointURL != "" {
-		prefix := strings.TrimRight(o.endpointURL, "/") + "/" + o.bucket + "/"
-		if strings.HasPrefix(rawURL, prefix) {
-			return strings.TrimPrefix(rawURL, prefix)
-		}
-	}
-
 	prefixes := make([]string, 0, 4)
 	if o.staticDomain != "" {
 		prefixes = append(prefixes, "https://"+o.staticDomain+"/")
 	}
 	if o.cdnDomain != "" {
 		prefixes = append(prefixes, "https://"+o.cdnDomain+"/")
+	}
+	if o.endpointURL != "" {
+		prefixes = append(prefixes, strings.TrimRight(o.endpointURL, "/")+"/"+o.bucket+"/")
 	}
 	// virtual-hosted-style: https://<bucket>.oss-<region>.aliyuncs.com/<key>
 	prefixes = append(prefixes, "https://"+o.bucket+".oss-"+o.region+".aliyuncs.com/")

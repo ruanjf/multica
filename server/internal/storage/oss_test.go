@@ -60,16 +60,46 @@ func TestOSSStorageKeyFromURL_CustomEndpointTrailingSlash(t *testing.T) {
 	}
 }
 
+func TestOSSStorageKeyFromURL_StaticDomain(t *testing.T) {
+	o := &OSSStorage{
+		bucket:       "test-bucket",
+		region:       "cn-hangzhou",
+		staticDomain: "static.example.com",
+	}
+
+	rawURL := "https://static.example.com/workspaces/ws-uuid/file.png"
+	if got := o.KeyFromURL(rawURL); got != "workspaces/ws-uuid/file.png" {
+		t.Fatalf("KeyFromURL(%q) = %q, want %q", rawURL, got, "workspaces/ws-uuid/file.png")
+	}
+}
+
+// staticDomain must take priority over endpointURL and cdnDomain.
+func TestOSSStorageKeyFromURL_StaticDomainPriorityOverEndpoint(t *testing.T) {
+	o := &OSSStorage{
+		bucket:       "test-bucket",
+		region:       "cn-hangzhou",
+		staticDomain: "static.example.com",
+		cdnDomain:    "cdn.example.com",
+		endpointURL:  "http://oss-internal.example.com",
+	}
+
+	rawURL := "https://static.example.com/workspaces/ws-uuid/file.png"
+	if got := o.KeyFromURL(rawURL); got != "workspaces/ws-uuid/file.png" {
+		t.Fatalf("KeyFromURL(%q) = %q, want %q (staticDomain should have highest priority)", rawURL, got, "workspaces/ws-uuid/file.png")
+	}
+}
+
 func TestOSSStorageUploadedURL(t *testing.T) {
 	const key = "uploads/abc/file.png"
 
 	cases := []struct {
-		name        string
-		bucket      string
-		region      string
-		cdnDomain   string
-		endpointURL string
-		want        string
+		name         string
+		bucket       string
+		region       string
+		cdnDomain    string
+		endpointURL  string
+		staticDomain string
+		want         string
 	}{
 		{
 			name:   "default virtual hosted style",
@@ -106,15 +136,25 @@ func TestOSSStorageUploadedURL(t *testing.T) {
 			endpointURL: "http://oss-internal.example.com/",
 			want:        "http://oss-internal.example.com/test-bucket/uploads/abc/file.png",
 		},
+		{
+			name:         "static domain wins over cdn and endpoint",
+			bucket:       "test-bucket",
+			region:       "cn-hangzhou",
+			staticDomain: "static.example.com",
+			cdnDomain:    "cdn.example.com",
+			endpointURL:  "http://oss-internal.example.com",
+			want:         "https://static.example.com/uploads/abc/file.png",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			o := &OSSStorage{
-				bucket:      tc.bucket,
-				region:      tc.region,
-				cdnDomain:   tc.cdnDomain,
-				endpointURL: tc.endpointURL,
+				bucket:       tc.bucket,
+				region:       tc.region,
+				cdnDomain:    tc.cdnDomain,
+				endpointURL:  tc.endpointURL,
+				staticDomain: tc.staticDomain,
 			}
 			if got := o.uploadedURL(key); got != tc.want {
 				t.Fatalf("uploadedURL() = %q, want %q", got, tc.want)
