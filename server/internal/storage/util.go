@@ -4,8 +4,8 @@ import (
 	"strings"
 )
 
-// sanitizeFilename removes characters that could cause header injection in Content-Disposition.
-func sanitizeFilename(name string) string {
+// SanitizeFilename removes characters that could cause header injection in Content-Disposition.
+func SanitizeFilename(name string) string {
 	var b strings.Builder
 	b.Grow(len(name))
 	for _, r := range name {
@@ -19,10 +19,10 @@ func sanitizeFilename(name string) string {
 	return b.String()
 }
 
-// isInlineContentType returns true for media types that browsers should
+// IsInlineContentType returns true for media types that browsers should
 // display inline (images, video, audio, PDF). Everything else triggers a
 // download via Content-Disposition: attachment.
-func isInlineContentType(ct string) bool {
+func IsInlineContentType(ct string) bool {
 	return strings.HasPrefix(ct, "image/") ||
 		strings.HasPrefix(ct, "video/") ||
 		strings.HasPrefix(ct, "audio/") ||

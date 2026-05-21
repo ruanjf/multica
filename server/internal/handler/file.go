@@ -73,17 +73,23 @@ func (h *Handler) attachmentToResponse(a db.Attachment) AttachmentResponse {
 	if h.CFSigner != nil {
 		resp.DownloadURL = h.CFSigner.SignedURL(a.Url, time.Now().Add(30*time.Minute))
 	} else if presigner, ok := h.Storage.(storage.URLPresigner); ok {
+		// OSS path: route inline display (url) through the server proxy so that
+		// access is session-bound — the Auth middleware validates the JWT cookie
+		// on every request, mirroring CloudFront signed-cookie enforcement.
+		// MULTICA_PUBLIC_URL is prepended when set so the full URL resolves
+		// correctly for Electron and cross-origin deployments; falls back to a
+		// relative path for same-origin (reverse-proxy) deployments.
+		base := h.cfg.PublicURL
+		resp.URL = base + "/api/attachments/" + uuidToString(a.ID) + "/stream?workspace_id=" + uuidToString(a.WorkspaceID)
+
+		// download_url: short-lived presigned URL for explicit download buttons.
+		// Only returned through authenticated API calls, so effectively
+		// session-gated; the 30-min window is acceptable for explicit downloads.
 		key := h.Storage.KeyFromURL(a.Url)
 		if signedURL, err := presigner.PresignGetURL(context.Background(), key, 30*time.Minute); err == nil {
 			resp.DownloadURL = signedURL
 		} else {
 			slog.Warn("oss presign failed, returning raw url", "key", key, "error", err)
-		}
-		// Also sign the inline URL (used for <img src> rendering) with a longer
-		// window. 7 days covers any realistic browser session without storing
-		// a permanent unsigned URL that a private bucket would reject.
-		if inlineURL, err := presigner.PresignGetURL(context.Background(), key, 7*24*time.Hour); err == nil {
-			resp.URL = inlineURL
 		}
 	}
 	if a.IssueID.Valid {
@@ -378,6 +384,75 @@ func (h *Handler) GetAttachmentByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, h.attachmentToResponse(att))
+}
+
+// ---------------------------------------------------------------------------
+// GetAttachmentStream — GET /api/attachments/{id}/stream
+//
+// Streams any attachment type through the server with JWT authentication.
+// Used when CloudFront signed cookies are not configured (OSS backend).
+// The Auth middleware requires a valid JWT (Authorization header or
+// multica_auth HttpOnly cookie) on every request, binding file access to the
+// user's active session — equivalent to CloudFront signed-cookie enforcement.
+//
+// workspace_id query parameter or X-Workspace-ID header must identify the
+// workspace for multi-tenancy isolation.
+// ---------------------------------------------------------------------------
+
+func (h *Handler) GetAttachmentStream(w http.ResponseWriter, r *http.Request) {
+	attachmentID := chi.URLParam(r, "id")
+	workspaceID := h.resolveWorkspaceID(r)
+	if workspaceID == "" {
+		writeError(w, http.StatusBadRequest, "workspace_id is required")
+		return
+	}
+
+	attUUID, ok := parseUUIDOrBadRequest(w, attachmentID, "attachment id")
+	if !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+
+	att, err := h.Queries.GetAttachment(r.Context(), db.GetAttachmentParams{
+		ID:          attUUID,
+		WorkspaceID: wsUUID,
+	})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "attachment not found")
+		return
+	}
+
+	if h.Storage == nil {
+		writeError(w, http.StatusServiceUnavailable, "storage not configured")
+		return
+	}
+	key := h.Storage.KeyFromURL(att.Url)
+	reader, err := h.Storage.GetReader(r.Context(), key)
+	if err != nil {
+		slog.Error("failed to open attachment for stream", "id", attachmentID, "key", key, "error", err)
+		writeError(w, http.StatusNotFound, "attachment object not found")
+		return
+	}
+	defer reader.Close()
+
+	safe := storage.SanitizeFilename(att.Filename)
+	disposition := "attachment"
+	if storage.IsInlineContentType(att.ContentType) {
+		disposition = "inline"
+	}
+
+	w.Header().Set("Content-Type", att.ContentType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename="%s"`, disposition, safe))
+	// private: only this user's browser may cache; short window so a revoked
+	// membership or expired session takes effect within minutes.
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if _, err := io.Copy(w, reader); err != nil {
+		slog.Error("failed to stream attachment", "id", attachmentID, "error", err)
+	}
 }
 
 // ---------------------------------------------------------------------------

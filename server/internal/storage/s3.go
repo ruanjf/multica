@@ -194,9 +194,9 @@ func (s *S3Storage) DeleteKeys(ctx context.Context, keys []string) {
 }
 
 func (s *S3Storage) Upload(ctx context.Context, key string, data []byte, contentType string, filename string) (string, error) {
-	safe := sanitizeFilename(filename)
+	safe := SanitizeFilename(filename)
 	disposition := "attachment"
-	if isInlineContentType(contentType) {
+	if IsInlineContentType(contentType) {
 		disposition = "inline"
 	}
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{

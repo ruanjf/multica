@@ -188,9 +188,9 @@ func (o *OSSStorage) DeleteKeys(ctx context.Context, keys []string) {
 }
 
 func (o *OSSStorage) Upload(ctx context.Context, key string, data []byte, contentType string, filename string) (string, error) {
-	safe := sanitizeFilename(filename)
+	safe := SanitizeFilename(filename)
 	disposition := "attachment"
-	if isInlineContentType(contentType) {
+	if IsInlineContentType(contentType) {
 		disposition = "inline"
 	}
 	_, err := o.client.PutObject(ctx, &oss.PutObjectRequest{
