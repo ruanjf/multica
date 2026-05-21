@@ -79,6 +79,12 @@ func (h *Handler) attachmentToResponse(a db.Attachment) AttachmentResponse {
 		} else {
 			slog.Warn("oss presign failed, returning raw url", "key", key, "error", err)
 		}
+		// Also sign the inline URL (used for <img src> rendering) with a longer
+		// window. 7 days covers any realistic browser session without storing
+		// a permanent unsigned URL that a private bucket would reject.
+		if inlineURL, err := presigner.PresignGetURL(context.Background(), key, 7*24*time.Hour); err == nil {
+			resp.URL = inlineURL
+		}
 	}
 	if a.IssueID.Valid {
 		s := uuidToString(a.IssueID)

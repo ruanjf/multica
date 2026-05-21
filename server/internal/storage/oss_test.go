@@ -1,6 +1,13 @@
 package storage
 
-import "testing"
+import (
+	"crypto/md5"
+	"fmt"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestOSSStorageKeyFromURL_VirtualHostedStyle(t *testing.T) {
 	o := &OSSStorage{
@@ -113,5 +120,68 @@ func TestOSSStorageUploadedURL(t *testing.T) {
 				t.Fatalf("uploadedURL() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSignCDNURL_Format(t *testing.T) {
+	o := &OSSStorage{
+		bucket:     "test-bucket",
+		region:     "cn-hangzhou",
+		cdnDomain:  "cdn.example.com",
+		cdnAuthKey: "testkey123",
+	}
+	const objKey = "uploads/ws/file.png"
+	expiry := 30 * time.Minute
+
+	signed := o.signCDNURL(objKey, expiry)
+
+	parsed, err := url.Parse(signed)
+	if err != nil {
+		t.Fatalf("signCDNURL returned unparseable URL: %v", err)
+	}
+	if parsed.Host != "cdn.example.com" {
+		t.Errorf("host = %q, want cdn.example.com", parsed.Host)
+	}
+	if parsed.Path != "/"+objKey {
+		t.Errorf("path = %q, want /%s", parsed.Path, objKey)
+	}
+	authKey := parsed.Query().Get("auth_key")
+	if authKey == "" {
+		t.Fatal("auth_key query param missing")
+	}
+	parts := strings.SplitN(authKey, "-", 4)
+	if len(parts) != 4 {
+		t.Fatalf("auth_key %q: expected 4 dash-separated parts, got %d", authKey, len(parts))
+	}
+	ts, randPart, uid, hash := parts[0], parts[1], parts[2], parts[3]
+	if randPart != "0" || uid != "0" {
+		t.Errorf("rand=%q uid=%q: want both '0'", randPart, uid)
+	}
+	// Re-derive the expected MD5 and compare.
+	plain := fmt.Sprintf("/%s-%s-%s-%s-%s", objKey, ts, randPart, uid, o.cdnAuthKey)
+	want := fmt.Sprintf("%x", md5.Sum([]byte(plain)))
+	if hash != want {
+		t.Errorf("hash = %q, want %q (plain: %q)", hash, want, plain)
+	}
+}
+
+func TestSignCDNURL_ExpiryEmbedded(t *testing.T) {
+	o := &OSSStorage{
+		bucket:     "b",
+		region:     "cn-shenzhen",
+		cdnDomain:  "cdn.example.com",
+		cdnAuthKey: "secret",
+	}
+	before := time.Now()
+	signed := o.signCDNURL("k", 10*time.Minute)
+	after := time.Now()
+
+	parsed, _ := url.Parse(signed)
+	parts := strings.SplitN(parsed.Query().Get("auth_key"), "-", 4)
+	var ts int64
+	fmt.Sscanf(parts[0], "%d", &ts)
+
+	if ts < before.Add(10*time.Minute).Unix() || ts > after.Add(10*time.Minute).Unix() {
+		t.Errorf("timestamp %d not in expected range [%d, %d]", ts, before.Add(10*time.Minute).Unix(), after.Add(10*time.Minute).Unix())
 	}
 }
