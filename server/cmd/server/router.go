@@ -140,6 +140,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		UseDailyRollupForDashboard:    os.Getenv("USAGE_DASHBOARD_ROLLUP_ENABLED") == "true",
 		PublicURL:                     strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
 		TrustedProxies:                parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
+		StaticDomain:                  strings.TrimSpace(os.Getenv("OSS_STATIC_DOMAIN")),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	if opts.DaemonWakeup != nil {
@@ -240,6 +241,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			local.ServeFile(w, r, file)
 		})
 	}
+
+	// Static file auth-redirect: GET /workspaces/{workspaceId}/{filename}
+	// Validates the JWT session (via Auth middleware) then issues a 302 to a
+	// short-lived presigned CDN/OSS URL. Mirrors S3+CloudFront signed-cookie
+	// enforcement for OSS deployments. When OSS_STATIC_DOMAIN is set, the
+	// handler rejects requests whose Host header doesn't match, so the route
+	// is only reachable via the dedicated static domain.
+	r.With(middleware.Auth(queries, patCache)).
+		Get("/workspaces/{workspaceId}/{filename}", h.GetStaticFileRedirect)
 
 	// Auth (public) — per-IP rate limiting.
 	if rdb == nil {

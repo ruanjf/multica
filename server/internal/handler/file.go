@@ -456,6 +456,89 @@ func (h *Handler) GetAttachmentStream(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
+// GetStaticFileRedirect — GET /workspaces/{workspaceId}/{filename}
+//
+// Auth-then-redirect endpoint that mirrors the S3+CloudFront signed-cookie
+// pattern for OSS deployments. The intended setup:
+//
+//   - OSS_STATIC_DOMAIN=static.example.com (points to this backend)
+//   - Attachments are stored at key workspaces/{wsId}/{attId}.ext
+//   - Frontend embeds URLs like https://static.example.com/workspaces/{wsId}/{attId}.ext
+//
+// Request flow:
+//  1. Browser sends the request carrying the multica_auth HttpOnly cookie
+//     (or a Bearer token in Authorization header).
+//  2. The Auth middleware validates the JWT — same enforcement as every other
+//     protected route.
+//  3. This handler verifies the Host header matches OSS_STATIC_DOMAIN (when
+//     configured), queries the attachment by workspace + attachment ID, then
+//     issues a 302 redirect to a short-lived presigned CDN or OSS URL.
+//  4. Browser follows the redirect and fetches the file directly from CDN/OSS.
+//
+// Accessing the URL without a valid session returns 401, and the presigned
+// redirect target is valid for only 30 minutes — equivalent to CloudFront
+// signed-URL enforcement.
+// ---------------------------------------------------------------------------
+
+func (h *Handler) GetStaticFileRedirect(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.StaticDomain != "" && r.Host != h.cfg.StaticDomain {
+		http.NotFound(w, r)
+		return
+	}
+
+	workspaceID := chi.URLParam(r, "workspaceId")
+	filename := chi.URLParam(r, "filename")
+
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+
+	// Extract attachment UUID from filename (strip extension).
+	attachmentID := filename
+	if i := strings.Index(filename, "."); i > 0 {
+		attachmentID = filename[:i]
+	}
+	attUUID, ok := parseUUIDOrBadRequest(w, attachmentID, "attachment id")
+	if !ok {
+		return
+	}
+
+	att, err := h.Queries.GetAttachment(r.Context(), db.GetAttachmentParams{
+		ID:          attUUID,
+		WorkspaceID: wsUUID,
+	})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "attachment not found")
+		return
+	}
+
+	if h.Storage == nil {
+		writeError(w, http.StatusServiceUnavailable, "storage not configured")
+		return
+	}
+
+	var signedURL string
+	if h.CFSigner != nil {
+		signedURL = h.CFSigner.SignedURL(att.Url, time.Now().Add(30*time.Minute))
+	} else if presigner, ok := h.Storage.(storage.URLPresigner); ok {
+		key := h.Storage.KeyFromURL(att.Url)
+		u, err := presigner.PresignGetURL(r.Context(), key, 30*time.Minute)
+		if err != nil {
+			slog.Error("failed to presign static redirect url", "id", attachmentID, "key", key, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to generate signed url")
+			return
+		}
+		signedURL = u
+	} else {
+		// Fallback: redirect to the raw URL (public bucket or local storage).
+		signedURL = att.Url
+	}
+
+	http.Redirect(w, r, signedURL, http.StatusFound)
+}
+
+// ---------------------------------------------------------------------------
 // GetAttachmentContent — GET /api/attachments/{id}/content
 //
 // Streams the raw bytes of a text-previewable attachment back to the client.

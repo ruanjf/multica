@@ -87,6 +87,12 @@ type Config struct {
 	// webhook limiter from being bypassed by a spoofed XFF on deployments
 	// without a header-stripping reverse proxy in front.
 	TrustedProxies []netip.Prefix
+	// StaticDomain is the hostname (without scheme) of the static file
+	// serving domain, e.g. "static.example.com". When non-empty the
+	// /workspaces/{workspaceId}/{filename} redirect handler only accepts
+	// requests whose Host header matches this value, preventing the route
+	// from being reachable on the main API domain and avoiding slug conflicts.
+	StaticDomain string
 }
 
 type Handler struct {
