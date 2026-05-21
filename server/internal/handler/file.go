@@ -72,25 +72,6 @@ func (h *Handler) attachmentToResponse(a db.Attachment) AttachmentResponse {
 	}
 	if h.CFSigner != nil {
 		resp.DownloadURL = h.CFSigner.SignedURL(a.Url, time.Now().Add(30*time.Minute))
-	} else if presigner, ok := h.Storage.(storage.URLPresigner); ok {
-		// OSS path: route inline display (url) through the server proxy so that
-		// access is session-bound — the Auth middleware validates the JWT cookie
-		// on every request, mirroring CloudFront signed-cookie enforcement.
-		// MULTICA_PUBLIC_URL is prepended when set so the full URL resolves
-		// correctly for Electron and cross-origin deployments; falls back to a
-		// relative path for same-origin (reverse-proxy) deployments.
-		base := h.cfg.PublicURL
-		resp.URL = base + "/api/attachments/" + uuidToString(a.ID) + "/stream?workspace_id=" + uuidToString(a.WorkspaceID)
-
-		// download_url: short-lived presigned URL for explicit download buttons.
-		// Only returned through authenticated API calls, so effectively
-		// session-gated; the 30-min window is acceptable for explicit downloads.
-		key := h.Storage.KeyFromURL(a.Url)
-		if signedURL, err := presigner.PresignGetURL(context.Background(), key, 30*time.Minute); err == nil {
-			resp.DownloadURL = signedURL
-		} else {
-			slog.Warn("oss presign failed, returning raw url", "key", key, "error", err)
-		}
 	}
 	if a.IssueID.Valid {
 		s := uuidToString(a.IssueID)
@@ -461,7 +442,7 @@ func (h *Handler) GetAttachmentStream(w http.ResponseWriter, r *http.Request) {
 // Auth-then-redirect endpoint that mirrors the S3+CloudFront signed-cookie
 // pattern for OSS deployments. The intended setup:
 //
-//   - OSS_STATIC_DOMAIN=static.example.com (points to this backend)
+//   - STATIC_DOMAIN=static.example.com (points to this backend)
 //   - Attachments are stored at key workspaces/{wsId}/{attId}.ext
 //   - Frontend embeds URLs like https://static.example.com/workspaces/{wsId}/{attId}.ext
 //
@@ -470,7 +451,7 @@ func (h *Handler) GetAttachmentStream(w http.ResponseWriter, r *http.Request) {
 //     (or a Bearer token in Authorization header).
 //  2. The Auth middleware validates the JWT — same enforcement as every other
 //     protected route.
-//  3. This handler verifies the Host header matches OSS_STATIC_DOMAIN (when
+//  3. This handler verifies the Host header matches STATIC_DOMAIN (when
 //     configured), queries the attachment by workspace + attachment ID, then
 //     issues a 302 redirect to a short-lived presigned CDN or OSS URL.
 //  4. Browser follows the redirect and fetches the file directly from CDN/OSS.

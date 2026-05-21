@@ -16,12 +16,13 @@ import (
 )
 
 type OSSStorage struct {
-	client      *oss.Client
-	bucket      string
-	region      string
-	cdnDomain   string
-	cdnAuthKey  string
-	endpointURL string
+	client       *oss.Client
+	bucket       string
+	region       string
+	cdnDomain    string
+	cdnAuthKey   string
+	endpointURL  string
+	staticDomain string
 }
 
 // NewOSSStorageFromEnv creates an OSSStorage from environment variables.
@@ -34,6 +35,7 @@ type OSSStorage struct {
 //   - OSS_CDN_DOMAIN (optional)
 //   - OSS_CDN_AUTH_KEY (optional; Alibaba Cloud CDN URL Auth Type A private key — enables CDN signed URLs)
 //   - OSS_ENDPOINT (optional, custom endpoint for internal/VPC access)
+//   - STATIC_DOMAIN (optional; hostname for the auth-redirect proxy route)
 func NewOSSStorageFromEnv() *OSSStorage {
 	bucket := os.Getenv("OSS_BUCKET")
 	if bucket == "" {
@@ -64,15 +66,17 @@ func NewOSSStorageFromEnv() *OSSStorage {
 
 	cdnDomain := os.Getenv("OSS_CDN_DOMAIN")
 	cdnAuthKey := os.Getenv("OSS_CDN_AUTH_KEY")
+	staticDomain := strings.TrimSpace(os.Getenv("STATIC_DOMAIN"))
 
-	slog.Info("OSS storage initialized", "bucket", bucket, "region", region, "cdn_domain", cdnDomain, "cdn_auth", cdnAuthKey != "", "endpoint", endpointURL)
+	slog.Info("OSS storage initialized", "bucket", bucket, "region", region, "cdn_domain", cdnDomain, "cdn_auth", cdnAuthKey != "", "endpoint", endpointURL, "static_domain", staticDomain)
 	return &OSSStorage{
-		client:      oss.NewClient(cfg),
-		bucket:      bucket,
-		region:      region,
-		cdnDomain:   cdnDomain,
-		cdnAuthKey:  cdnAuthKey,
-		endpointURL: endpointURL,
+		client:       oss.NewClient(cfg),
+		bucket:       bucket,
+		region:       region,
+		cdnDomain:    cdnDomain,
+		cdnAuthKey:   cdnAuthKey,
+		endpointURL:  endpointURL,
+		staticDomain: staticDomain,
 	}
 }
 
@@ -80,7 +84,7 @@ func (o *OSSStorage) CdnDomain() string {
 	return o.cdnDomain
 }
 
-// KeyFromURL extracts the OSS object key from a CDN or bucket URL.
+// KeyFromURL extracts the OSS object key from a static-domain, CDN, or bucket URL.
 func (o *OSSStorage) KeyFromURL(rawURL string) string {
 	if o.endpointURL != "" {
 		prefix := strings.TrimRight(o.endpointURL, "/") + "/" + o.bucket + "/"
@@ -89,7 +93,10 @@ func (o *OSSStorage) KeyFromURL(rawURL string) string {
 		}
 	}
 
-	prefixes := make([]string, 0, 3)
+	prefixes := make([]string, 0, 4)
+	if o.staticDomain != "" {
+		prefixes = append(prefixes, "https://"+o.staticDomain+"/")
+	}
 	if o.cdnDomain != "" {
 		prefixes = append(prefixes, "https://"+o.cdnDomain+"/")
 	}
@@ -208,6 +215,9 @@ func (o *OSSStorage) Upload(ctx context.Context, key string, data []byte, conten
 }
 
 func (o *OSSStorage) uploadedURL(key string) string {
+	if o.staticDomain != "" {
+		return fmt.Sprintf("https://%s/%s", o.staticDomain, key)
+	}
 	if o.cdnDomain != "" {
 		return fmt.Sprintf("https://%s/%s", o.cdnDomain, key)
 	}
