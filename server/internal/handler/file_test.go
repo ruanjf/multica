@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -470,6 +471,178 @@ func TestGetAttachmentContent_NotFound(t *testing.T) {
 // isTextPreviewable is the whitelist linkpin between the proxy and the
 // client-side dispatcher. Regress against the most common content types so
 // drifting one of the lists alone fails loud.
+// ---------------------------------------------------------------------------
+// GetStaticFileRedirect tests
+// ---------------------------------------------------------------------------
+
+// mockPresignStorage extends mockStorage with URLPresigner for static-redirect tests.
+type mockPresignStorage struct {
+	mockStorage
+}
+
+func (m *mockPresignStorage) PresignGetURL(_ context.Context, key string, _ time.Duration) (string, error) {
+	return "https://oss-signed.example.com/" + key + "?signed=1", nil
+}
+
+// seedRedirectAttachment inserts an attachment row, uploads its bytes into the
+// given mockPresignStorage, and returns (attachmentID, filename) where
+// filename = "{uuid}.png". The key stored in the mock is
+// "workspaces/{wsID}/{filename}" — matching what GetStaticFileRedirect derives.
+func seedRedirectAttachment(t *testing.T, store *mockPresignStorage, wsID string) (attID, filename string) {
+	t.Helper()
+	// Insert with temp values to obtain the auto-generated UUID.
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO attachment (workspace_id, uploader_type, uploader_id, filename, url, content_type, size_bytes)
+		VALUES ($1, 'member', $2, 'tmp.png', 'https://cdn.example.com/tmp', 'image/png', 4)
+		RETURNING id::text
+	`, wsID, testUserID).Scan(&attID); err != nil {
+		t.Fatalf("seed redirect attachment: %v", err)
+	}
+	filename = attID + ".png"
+	key := "workspaces/" + wsID + "/" + filename
+	url, err := store.Upload(context.Background(), key, []byte("data"), "image/png", filename)
+	if err != nil {
+		t.Fatalf("seed Upload: %v", err)
+	}
+	if _, err := testPool.Exec(context.Background(), `
+		UPDATE attachment SET filename = $1, url = $2 WHERE id = $3
+	`, filename, url, attID); err != nil {
+		t.Fatalf("update attachment row: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM attachment WHERE id = $1`, attID)
+	})
+	return attID, filename
+}
+
+func newRedirectRequest(t *testing.T, host, wsID, filename string) (*http.Request, *httptest.ResponseRecorder) {
+	t.Helper()
+	req := httptest.NewRequest("GET", "/workspaces/"+wsID+"/"+filename, nil)
+	req.Header.Set("X-User-ID", testUserID)
+	if host != "" {
+		req.Host = host
+	}
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("workspaceId", wsID)
+	rctx.URLParams.Add("filename", filename)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	return req, httptest.NewRecorder()
+}
+
+// TestGetStaticFileRedirect_DomainMismatch verifies that when StaticDomain is
+// configured, a request from a different host is rejected with 404.
+func TestGetStaticFileRedirect_DomainMismatch(t *testing.T) {
+	store := &mockPresignStorage{}
+	origStorage := testHandler.Storage
+	origCfg := testHandler.cfg
+	testHandler.Storage = store
+	testHandler.cfg.StaticDomain = "static.example.com"
+	defer func() {
+		testHandler.Storage = origStorage
+		testHandler.cfg = origCfg
+	}()
+
+	_, filename := seedRedirectAttachment(t, store, testWorkspaceID)
+
+	req, w := newRedirectRequest(t, "api.example.com", testWorkspaceID, filename)
+	testHandler.GetStaticFileRedirect(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("domain mismatch: expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestGetStaticFileRedirect_DomainMatch verifies that a matching host with a
+// valid attachment redirects to the presigned URL.
+func TestGetStaticFileRedirect_DomainMatch(t *testing.T) {
+	store := &mockPresignStorage{}
+	origStorage := testHandler.Storage
+	origCfg := testHandler.cfg
+	testHandler.Storage = store
+	testHandler.cfg.StaticDomain = "static.example.com"
+	defer func() {
+		testHandler.Storage = origStorage
+		testHandler.cfg = origCfg
+	}()
+
+	_, filename := seedRedirectAttachment(t, store, testWorkspaceID)
+
+	req, w := newRedirectRequest(t, "static.example.com", testWorkspaceID, filename)
+	testHandler.GetStaticFileRedirect(w, req)
+	if w.Code != http.StatusFound {
+		t.Fatalf("domain match: expected 302, got %d: %s", w.Code, w.Body.String())
+	}
+	loc := w.Header().Get("Location")
+	if !strings.HasPrefix(loc, "https://oss-signed.example.com/") {
+		t.Fatalf("redirect location %q does not point to presigned URL", loc)
+	}
+}
+
+// TestGetStaticFileRedirect_NoDomainRestriction verifies that when StaticDomain
+// is empty, any host is accepted.
+func TestGetStaticFileRedirect_NoDomainRestriction(t *testing.T) {
+	store := &mockPresignStorage{}
+	origStorage := testHandler.Storage
+	origCfg := testHandler.cfg
+	testHandler.Storage = store
+	testHandler.cfg.StaticDomain = ""
+	defer func() {
+		testHandler.Storage = origStorage
+		testHandler.cfg = origCfg
+	}()
+
+	_, filename := seedRedirectAttachment(t, store, testWorkspaceID)
+
+	req, w := newRedirectRequest(t, "anything.example.com", testWorkspaceID, filename)
+	testHandler.GetStaticFileRedirect(w, req)
+	if w.Code != http.StatusFound {
+		t.Fatalf("no domain restriction: expected 302, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestGetStaticFileRedirect_AttachmentNotFound verifies that a non-existent
+// attachment UUID returns 404.
+func TestGetStaticFileRedirect_AttachmentNotFound(t *testing.T) {
+	store := &mockPresignStorage{}
+	origStorage := testHandler.Storage
+	origCfg := testHandler.cfg
+	testHandler.Storage = store
+	testHandler.cfg.StaticDomain = ""
+	defer func() {
+		testHandler.Storage = origStorage
+		testHandler.cfg = origCfg
+	}()
+
+	req, w := newRedirectRequest(t, "", testWorkspaceID, "00000000-0000-0000-0000-000000000abc.png")
+	testHandler.GetStaticFileRedirect(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("missing attachment: expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestGetStaticFileRedirect_ForeignWorkspace verifies workspace isolation:
+// an attachment that exists in testWorkspaceID is not accessible when queried
+// under a different workspace.
+func TestGetStaticFileRedirect_ForeignWorkspace(t *testing.T) {
+	store := &mockPresignStorage{}
+	origStorage := testHandler.Storage
+	origCfg := testHandler.cfg
+	testHandler.Storage = store
+	testHandler.cfg.StaticDomain = ""
+	defer func() {
+		testHandler.Storage = origStorage
+		testHandler.cfg = origCfg
+	}()
+
+	_, filename := seedRedirectAttachment(t, store, testWorkspaceID)
+
+	foreign := "00000000-0000-0000-0000-000000000099"
+	req, w := newRedirectRequest(t, "", foreign, filename)
+	testHandler.GetStaticFileRedirect(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("foreign workspace: expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestIsTextPreviewable(t *testing.T) {
 	t.Helper()
 	cases := []struct {
