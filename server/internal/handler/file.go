@@ -396,10 +396,6 @@ func (h *Handler) GetAttachmentByID(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 func (h *Handler) GetStaticFileRedirect(w http.ResponseWriter, r *http.Request) {
-	if h.cfg.StaticDomain != "" && r.Host != h.cfg.StaticDomain {
-		http.NotFound(w, r)
-		return
-	}
 
 	if h.Storage == nil {
 		writeError(w, http.StatusServiceUnavailable, "storage not configured")
