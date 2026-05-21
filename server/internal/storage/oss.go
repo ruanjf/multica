@@ -17,13 +17,14 @@ import (
 )
 
 type OSSStorage struct {
-	client       *oss.Client
-	bucket       string
-	region       string
-	cdnDomain    string
-	cdnAuthKey   string
-	endpointURL  string
-	staticDomain string
+	client          *oss.Client
+	bucket          string
+	region          string
+	cdnDomain       string
+	cdnAuthKey      string
+	endpointURL     string
+	staticDomain    string
+	presignDisabled bool
 }
 
 // NewOSSStorageFromEnv creates an OSSStorage from environment variables.
@@ -37,6 +38,7 @@ type OSSStorage struct {
 //   - OSS_CDN_AUTH_KEY (optional; Alibaba Cloud CDN URL Auth Type A private key — enables CDN signed URLs)
 //   - OSS_ENDPOINT (optional, custom endpoint for internal/VPC access)
 //   - STATIC_DOMAIN (optional; hostname for the auth-redirect proxy route)
+//   - OSS_PRESIGN_DISABLED (optional; set to "true" or "1" to disable presigned URL generation)
 func NewOSSStorageFromEnv() *OSSStorage {
 	bucket := os.Getenv("OSS_BUCKET")
 	if bucket == "" {
@@ -69,15 +71,27 @@ func NewOSSStorageFromEnv() *OSSStorage {
 	cdnAuthKey := os.Getenv("OSS_CDN_AUTH_KEY")
 	staticDomain := strings.TrimSpace(os.Getenv("STATIC_DOMAIN"))
 
-	slog.Info("OSS storage initialized", "bucket", bucket, "region", region, "cdn_domain", cdnDomain, "cdn_auth", cdnAuthKey != "", "endpoint", endpointURL, "static_domain", staticDomain)
+	presignDisabledVal := strings.TrimSpace(os.Getenv("OSS_PRESIGN_DISABLED"))
+	presignDisabled := presignDisabledVal == "true" || presignDisabledVal == "1"
+
+	slog.Info("OSS storage initialized",
+		"bucket", bucket,
+		"region", region,
+		"cdn_domain", cdnDomain,
+		"cdn_auth", cdnAuthKey != "",
+		"endpoint", endpointURL,
+		"static_domain", staticDomain,
+		"presign_disabled", presignDisabled,
+	)
 	return &OSSStorage{
-		client:       oss.NewClient(cfg),
-		bucket:       bucket,
-		region:       region,
-		cdnDomain:    cdnDomain,
-		cdnAuthKey:   cdnAuthKey,
-		endpointURL:  endpointURL,
-		staticDomain: staticDomain,
+		client:          oss.NewClient(cfg),
+		bucket:          bucket,
+		region:          region,
+		cdnDomain:       cdnDomain,
+		cdnAuthKey:      cdnAuthKey,
+		endpointURL:     endpointURL,
+		staticDomain:    staticDomain,
+		presignDisabled: presignDisabled,
 	}
 }
 
@@ -113,17 +127,15 @@ func (o *OSSStorage) KeyFromURL(rawURL string) string {
 }
 
 // PresignGetURL generates a time-limited signed URL for direct object download.
-// Implements storage.URLPresigner; used by the handler when CloudFront signing
-// is not configured.
+// Returns an empty string without error when OSS_PRESIGN_DISABLED is set.
 //
 // When OSS_CDN_DOMAIN and OSS_CDN_AUTH_KEY are both set, it generates an
-// Alibaba Cloud CDN URL Authentication (Type A) signed URL. The signature is
-// computed from the CDN URL path and embedded as an auth_key query parameter;
-// the CDN validates it on every request without touching the origin.
-//
-// Otherwise it falls back to an OSS presigned URL that points directly to the
-// bucket endpoint (bypassing any CDN domain).
+// Alibaba Cloud CDN URL Authentication (Type A) signed URL. Otherwise it falls
+// back to an OSS presigned URL that points directly to the bucket endpoint.
 func (o *OSSStorage) PresignGetURL(ctx context.Context, key string, expiry time.Duration) (string, error) {
+	if o.presignDisabled {
+		return "", nil
+	}
 	if key == "" {
 		return "", fmt.Errorf("oss PresignGetURL: empty key")
 	}
@@ -144,10 +156,6 @@ func (o *OSSStorage) PresignGetURL(ctx context.Context, key string, expiry time.
 //
 // Type A format: https://<cdn>/<key>?auth_key=<timestamp>-<rand>-<uid>-<md5>
 // MD5 input:     /<key>-<timestamp>-<rand>-<uid>-<privateKey>
-//
-// The CDN validates the signature on every request and rejects expired ones.
-// The caller sets the expiry window; the CDN checks timestamp + TTL configured
-// on the distribution, so the effective window is min(expiry, CDN TTL).
 func (o *OSSStorage) signCDNURL(key string, expiry time.Duration) string {
 	uri := "/" + key
 	timestamp := time.Now().Add(expiry).Unix()
