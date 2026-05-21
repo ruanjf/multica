@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
@@ -99,6 +100,24 @@ func (o *OSSStorage) KeyFromURL(rawURL string) string {
 		return rawURL[i+1:]
 	}
 	return rawURL
+}
+
+// PresignGetURL generates a time-limited signed URL for direct object download.
+// Implements storage.URLPresigner; used by the handler when CloudFront signing
+// is not configured. The returned URL bypasses the CDN domain and points directly
+// to the OSS bucket endpoint, signed with the configured credentials.
+func (o *OSSStorage) PresignGetURL(ctx context.Context, key string, expiry time.Duration) (string, error) {
+	if key == "" {
+		return "", fmt.Errorf("oss PresignGetURL: empty key")
+	}
+	result, err := o.client.Presign(ctx, &oss.GetObjectRequest{
+		Bucket: oss.Ptr(o.bucket),
+		Key:    oss.Ptr(key),
+	}, oss.PresignExpires(expiry))
+	if err != nil {
+		return "", fmt.Errorf("oss presign: %w", err)
+	}
+	return result.URL, nil
 }
 
 func (o *OSSStorage) GetReader(ctx context.Context, key string) (io.ReadCloser, error) {

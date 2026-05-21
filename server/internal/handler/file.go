@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/internal/storage"
 )
 
 // extContentTypes overrides http.DetectContentType for extensions it gets wrong.
@@ -71,6 +72,13 @@ func (h *Handler) attachmentToResponse(a db.Attachment) AttachmentResponse {
 	}
 	if h.CFSigner != nil {
 		resp.DownloadURL = h.CFSigner.SignedURL(a.Url, time.Now().Add(30*time.Minute))
+	} else if presigner, ok := h.Storage.(storage.URLPresigner); ok {
+		key := h.Storage.KeyFromURL(a.Url)
+		if signedURL, err := presigner.PresignGetURL(context.Background(), key, 30*time.Minute); err == nil {
+			resp.DownloadURL = signedURL
+		} else {
+			slog.Warn("oss presign failed, returning raw url", "key", key, "error", err)
+		}
 	}
 	if a.IssueID.Valid {
 		s := uuidToString(a.IssueID)
