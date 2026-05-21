@@ -643,6 +643,40 @@ func TestGetStaticFileRedirect_ForeignWorkspace(t *testing.T) {
 	}
 }
 
+// TestGetStaticFileRedirect_UserPath verifies that a users/{userId}/{filename}
+// request is handled without a DB lookup and redirects to a presigned URL
+// using the key "users/{userId}/{filename}".
+func TestGetStaticFileRedirect_UserPath(t *testing.T) {
+	store := &mockPresignStorage{}
+	origStorage := testHandler.Storage
+	origCfg := testHandler.cfg
+	testHandler.Storage = store
+	testHandler.cfg.StaticDomain = ""
+	defer func() {
+		testHandler.Storage = origStorage
+		testHandler.cfg = origCfg
+	}()
+
+	filename := "00000000-0000-0000-0000-000000000abc.png"
+	req := httptest.NewRequest("GET", "/users/"+testUserID+"/"+filename, nil)
+	req.Header.Set("X-User-ID", testUserID)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("userId", testUserID)
+	rctx.URLParams.Add("filename", filename)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	testHandler.GetStaticFileRedirect(w, req)
+	if w.Code != http.StatusFound {
+		t.Fatalf("user path: expected 302, got %d: %s", w.Code, w.Body.String())
+	}
+	loc := w.Header().Get("Location")
+	expectedKey := "users/" + testUserID + "/" + filename
+	if !strings.Contains(loc, expectedKey) {
+		t.Fatalf("redirect location %q does not contain key %q", loc, expectedKey)
+	}
+}
+
 func TestIsTextPreviewable(t *testing.T) {
 	t.Helper()
 	cases := []struct {

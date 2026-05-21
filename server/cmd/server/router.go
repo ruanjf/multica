@@ -242,15 +242,18 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		})
 	}
 
-	// Static file auth-redirect: GET /workspaces/{workspaceId}/{filename}
-	// Validates the JWT session (via Auth middleware) then issues a 302 to a
-	// short-lived presigned CDN/OSS URL. Mirrors S3+CloudFront signed-cookie
-	// enforcement for OSS deployments. Only registered when STATIC_DOMAIN is
-	// set; the handler also enforces that the Host header matches STATIC_DOMAIN
-	// to prevent /workspaces/* from being claimed on the main API domain.
+	// Static file auth-redirect: GET /workspaces/{workspaceId}/{filename} and
+	// GET /users/{userId}/{filename}. Validates the JWT session (via Auth
+	// middleware) then issues a 302 to a short-lived presigned CDN/OSS URL.
+	// Mirrors S3+CloudFront signed-cookie enforcement for OSS deployments. Only
+	// registered when STATIC_DOMAIN is set; the handler also enforces that the
+	// Host header matches STATIC_DOMAIN to prevent these paths from being
+	// claimed on the main API domain.
 	if signupConfig.StaticDomain != "" {
 		r.With(middleware.Auth(queries, patCache)).
 			Get("/workspaces/{workspaceId}/{filename}", h.GetStaticFileRedirect)
+		r.With(middleware.Auth(queries, patCache)).
+			Get("/users/{userId}/{filename}", h.GetStaticFileRedirect)
 	}
 
 	// Auth (public) — per-IP rate limiting.

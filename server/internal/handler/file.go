@@ -438,12 +438,14 @@ func (h *Handler) GetAttachmentStream(w http.ResponseWriter, r *http.Request) {
 
 // ---------------------------------------------------------------------------
 // GetStaticFileRedirect — GET /workspaces/{workspaceId}/{filename}
+//                         GET /users/{userId}/{filename}
 //
 // Auth-then-redirect endpoint that mirrors the S3+CloudFront signed-cookie
 // pattern for OSS deployments. The intended setup:
 //
 //   - STATIC_DOMAIN=static.example.com (points to this backend)
-//   - Attachments are stored at key workspaces/{wsId}/{attId}.ext
+//   - Workspace files stored at key workspaces/{wsId}/{attId}.ext
+//   - User files (avatars etc.) stored at key users/{userId}/{attId}.ext
 //   - Frontend embeds URLs like https://static.example.com/workspaces/{wsId}/{attId}.ext
 //
 // Request flow:
@@ -452,8 +454,9 @@ func (h *Handler) GetAttachmentStream(w http.ResponseWriter, r *http.Request) {
 //  2. The Auth middleware validates the JWT — same enforcement as every other
 //     protected route.
 //  3. This handler verifies the Host header matches STATIC_DOMAIN (when
-//     configured), queries the attachment by workspace + attachment ID, then
-//     issues a 302 redirect to a short-lived presigned CDN or OSS URL.
+//     configured), queries the attachment by workspace + attachment ID (for
+//     workspace-scoped files) or constructs the key directly (for user-scoped
+//     files), then issues a 302 redirect to a short-lived presigned CDN/OSS URL.
 //  4. Browser follows the redirect and fetches the file directly from CDN/OSS.
 //
 // Accessing the URL without a valid session returns 401, and the presigned
@@ -467,53 +470,81 @@ func (h *Handler) GetStaticFileRedirect(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	workspaceID := chi.URLParam(r, "workspaceId")
-	filename := chi.URLParam(r, "filename")
-
-	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
-	if !ok {
-		return
-	}
-
-	// Extract attachment UUID from filename (strip extension).
-	attachmentID := filename
-	if i := strings.Index(filename, "."); i > 0 {
-		attachmentID = filename[:i]
-	}
-	attUUID, ok := parseUUIDOrBadRequest(w, attachmentID, "attachment id")
-	if !ok {
-		return
-	}
-
-	att, err := h.Queries.GetAttachment(r.Context(), db.GetAttachmentParams{
-		ID:          attUUID,
-		WorkspaceID: wsUUID,
-	})
-	if err != nil {
-		writeError(w, http.StatusNotFound, "attachment not found")
-		return
-	}
-
 	if h.Storage == nil {
 		writeError(w, http.StatusServiceUnavailable, "storage not configured")
 		return
 	}
 
+	workspaceID := chi.URLParam(r, "workspaceId")
+	userID := chi.URLParam(r, "userId")
+	filename := chi.URLParam(r, "filename")
+
+	// key is the storage object key; rawURL is the un-signed base URL stored in
+	// DB (workspace files) or reconstructed from the CDN domain (user files).
+	var key, rawURL string
+
+	if workspaceID != "" {
+		// Workspace-scoped file: look up attachment in DB for access control.
+		wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+		if !ok {
+			return
+		}
+
+		// Extract attachment UUID from filename (strip extension).
+		attachmentID := filename
+		if i := strings.Index(filename, "."); i > 0 {
+			attachmentID = filename[:i]
+		}
+		attUUID, ok := parseUUIDOrBadRequest(w, attachmentID, "attachment id")
+		if !ok {
+			return
+		}
+
+		att, err := h.Queries.GetAttachment(r.Context(), db.GetAttachmentParams{
+			ID:          attUUID,
+			WorkspaceID: wsUUID,
+		})
+		if err != nil {
+			writeError(w, http.StatusNotFound, "attachment not found")
+			return
+		}
+		rawURL = att.Url
+		key = h.Storage.KeyFromURL(rawURL)
+	} else if userID != "" {
+		// User-scoped file (e.g. avatar): no DB record exists for these uploads.
+		// Any authenticated user may access user-scoped files (needed for
+		// viewing other members' avatars within a workspace).
+		if _, ok := parseUUIDOrBadRequest(w, userID, "user id"); !ok {
+			return
+		}
+		key = "users/" + userID + "/" + filename
+		// Reconstruct the base URL the same way Upload() would have returned it:
+		// CDN domain takes priority, then a placeholder (for fallback path below).
+		if cdn := h.Storage.CdnDomain(); cdn != "" {
+			rawURL = "https://" + cdn + "/" + key
+		} else {
+			rawURL = key
+		}
+	} else {
+		writeError(w, http.StatusBadRequest, "missing workspace or user id")
+		return
+	}
+
 	var signedURL string
 	if h.CFSigner != nil {
-		signedURL = h.CFSigner.SignedURL(att.Url, time.Now().Add(30*time.Minute))
+		// CloudFront: sign the CDN URL (rawURL already uses the CDN domain).
+		signedURL = h.CFSigner.SignedURL(rawURL, time.Now().Add(30*time.Minute))
 	} else if presigner, ok := h.Storage.(storage.URLPresigner); ok {
-		key := h.Storage.KeyFromURL(att.Url)
 		u, err := presigner.PresignGetURL(r.Context(), key, 30*time.Minute)
 		if err != nil {
-			slog.Error("failed to presign static redirect url", "id", attachmentID, "key", key, "error", err)
+			slog.Error("failed to presign static redirect url", "key", key, "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to generate signed url")
 			return
 		}
 		signedURL = u
 	} else {
 		// Fallback: redirect to the raw URL (public bucket or local storage).
-		signedURL = att.Url
+		signedURL = rawURL
 	}
 
 	http.Redirect(w, r, signedURL, http.StatusFound)
