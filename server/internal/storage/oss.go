@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -84,13 +85,9 @@ func (o *OSSStorage) CdnDomain() string {
 	return o.cdnDomain
 }
 
-// KeyFromURL extracts the OSS object key from a static-domain, CDN, or bucket URL.
-// Priority mirrors uploadedURL: staticDomain > cdnDomain > endpointURL > default.
+// KeyFromURL extracts the OSS object key from a CDN or bucket URL.
 func (o *OSSStorage) KeyFromURL(rawURL string) string {
-	prefixes := make([]string, 0, 4)
-	if o.staticDomain != "" {
-		prefixes = append(prefixes, "https://"+o.staticDomain+"/")
-	}
+	prefixes := make([]string, 0, 3)
 	if o.cdnDomain != "" {
 		prefixes = append(prefixes, "https://"+o.cdnDomain+"/")
 	}
@@ -104,6 +101,10 @@ func (o *OSSStorage) KeyFromURL(rawURL string) string {
 		if strings.HasPrefix(rawURL, prefix) {
 			return strings.TrimPrefix(rawURL, prefix)
 		}
+	}
+	// Generic fallback: extract full path from any URL so directory structure is preserved.
+	if u, err := url.Parse(rawURL); err == nil && u.Path != "" {
+		return strings.TrimPrefix(u.Path, "/")
 	}
 	if i := strings.LastIndex(rawURL, "/"); i >= 0 {
 		return rawURL[i+1:]

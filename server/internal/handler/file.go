@@ -441,7 +441,7 @@ func (h *Handler) GetStaticFileRedirect(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		rawURL = att.Url
-		key = h.Storage.KeyFromURL(rawURL)
+		key = "workspaces/" + workspaceID + "/" + filename
 		contentType = att.ContentType
 	} else if userID != "" {
 		// User-scoped file (e.g. avatar): no DB record exists for these uploads.

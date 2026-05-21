@@ -60,32 +60,15 @@ func TestOSSStorageKeyFromURL_CustomEndpointTrailingSlash(t *testing.T) {
 	}
 }
 
-func TestOSSStorageKeyFromURL_StaticDomain(t *testing.T) {
+func TestOSSStorageKeyFromURL_UnknownDomainFallback(t *testing.T) {
 	o := &OSSStorage{
-		bucket:       "test-bucket",
-		region:       "cn-hangzhou",
-		staticDomain: "static.example.com",
+		bucket: "test-bucket",
+		region: "cn-hangzhou",
 	}
 
 	rawURL := "https://static.example.com/workspaces/ws-uuid/file.png"
 	if got := o.KeyFromURL(rawURL); got != "workspaces/ws-uuid/file.png" {
-		t.Fatalf("KeyFromURL(%q) = %q, want %q", rawURL, got, "workspaces/ws-uuid/file.png")
-	}
-}
-
-// staticDomain must take priority over endpointURL and cdnDomain.
-func TestOSSStorageKeyFromURL_StaticDomainPriorityOverEndpoint(t *testing.T) {
-	o := &OSSStorage{
-		bucket:       "test-bucket",
-		region:       "cn-hangzhou",
-		staticDomain: "static.example.com",
-		cdnDomain:    "cdn.example.com",
-		endpointURL:  "http://oss-internal.example.com",
-	}
-
-	rawURL := "https://static.example.com/workspaces/ws-uuid/file.png"
-	if got := o.KeyFromURL(rawURL); got != "workspaces/ws-uuid/file.png" {
-		t.Fatalf("KeyFromURL(%q) = %q, want %q (staticDomain should have highest priority)", rawURL, got, "workspaces/ws-uuid/file.png")
+		t.Fatalf("KeyFromURL(%q) = %q, want %q (full path should be preserved for unknown domains)", rawURL, got, "workspaces/ws-uuid/file.png")
 	}
 }
 
