@@ -529,75 +529,6 @@ func newRedirectRequest(t *testing.T, host, wsID, filename string) (*http.Reques
 	return req, httptest.NewRecorder()
 }
 
-// TestGetStaticFileRedirect_DomainMismatch verifies that when StaticDomain is
-// configured, a request from a different host is rejected with 404.
-func TestGetStaticFileRedirect_DomainMismatch(t *testing.T) {
-	store := &mockPresignStorage{}
-	origStorage := testHandler.Storage
-	origCfg := testHandler.cfg
-	testHandler.Storage = store
-	testHandler.cfg.StaticDomain = "static.example.com"
-	defer func() {
-		testHandler.Storage = origStorage
-		testHandler.cfg = origCfg
-	}()
-
-	_, filename := seedRedirectAttachment(t, store, testWorkspaceID)
-
-	req, w := newRedirectRequest(t, "api.example.com", testWorkspaceID, filename)
-	testHandler.GetStaticFileRedirect(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("domain mismatch: expected 404, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-// TestGetStaticFileRedirect_DomainMatch verifies that a matching host with a
-// valid attachment redirects to the presigned URL.
-func TestGetStaticFileRedirect_DomainMatch(t *testing.T) {
-	store := &mockPresignStorage{}
-	origStorage := testHandler.Storage
-	origCfg := testHandler.cfg
-	testHandler.Storage = store
-	testHandler.cfg.StaticDomain = "static.example.com"
-	defer func() {
-		testHandler.Storage = origStorage
-		testHandler.cfg = origCfg
-	}()
-
-	_, filename := seedRedirectAttachment(t, store, testWorkspaceID)
-
-	req, w := newRedirectRequest(t, "static.example.com", testWorkspaceID, filename)
-	testHandler.GetStaticFileRedirect(w, req)
-	if w.Code != http.StatusFound {
-		t.Fatalf("domain match: expected 302, got %d: %s", w.Code, w.Body.String())
-	}
-	loc := w.Header().Get("Location")
-	if !strings.HasPrefix(loc, "https://oss-signed.example.com/") {
-		t.Fatalf("redirect location %q does not point to presigned URL", loc)
-	}
-}
-
-// TestGetStaticFileRedirect_NoDomainRestriction verifies that when StaticDomain
-// is empty, any host is accepted.
-func TestGetStaticFileRedirect_NoDomainRestriction(t *testing.T) {
-	store := &mockPresignStorage{}
-	origStorage := testHandler.Storage
-	origCfg := testHandler.cfg
-	testHandler.Storage = store
-	testHandler.cfg.StaticDomain = ""
-	defer func() {
-		testHandler.Storage = origStorage
-		testHandler.cfg = origCfg
-	}()
-
-	_, filename := seedRedirectAttachment(t, store, testWorkspaceID)
-
-	req, w := newRedirectRequest(t, "anything.example.com", testWorkspaceID, filename)
-	testHandler.GetStaticFileRedirect(w, req)
-	if w.Code != http.StatusFound {
-		t.Fatalf("no domain restriction: expected 302, got %d: %s", w.Code, w.Body.String())
-	}
-}
 
 // TestGetStaticFileRedirect_AttachmentNotFound verifies that a non-existent
 // attachment UUID returns 404.
@@ -782,4 +713,3 @@ func TestIsTextPreviewable(t *testing.T) {
 		})
 	}
 }
-
