@@ -14,6 +14,7 @@ import (
 
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
+	openapicred "github.com/aliyun/credentials-go/credentials"
 )
 
 type OSSStorage struct {
@@ -33,7 +34,8 @@ type OSSStorage struct {
 // Environment variables:
 //   - OSS_BUCKET (required)
 //   - OSS_REGION (required, e.g. cn-hangzhou)
-//   - ALIBABA_CLOUD_ACCESS_KEY_ID / ALIBABA_CLOUD_ACCESS_KEY_SECRET (optional; falls back to ECS RAM role)
+//   - ALIBABA_CLOUD_ROLE_ARN / ALIBABA_CLOUD_OIDC_PROVIDER_ARN / ALIBABA_CLOUD_OIDC_TOKEN_FILE (optional; k8s RRSA service-account auth, takes priority)
+//   - ALIBABA_CLOUD_ACCESS_KEY_ID / ALIBABA_CLOUD_ACCESS_KEY_SECRET (optional; static keys, falls back to ECS RAM role)
 //   - OSS_CDN_DOMAIN (optional)
 //   - OSS_CDN_AUTH_KEY (optional; Alibaba Cloud CDN URL Auth Type A private key — enables CDN signed URLs)
 //   - OSS_ENDPOINT (optional, custom endpoint for internal/VPC access)
@@ -56,9 +58,38 @@ func NewOSSStorageFromEnv() *OSSStorage {
 
 	accessKey := os.Getenv("ALIBABA_CLOUD_ACCESS_KEY_ID")
 	secretKey := os.Getenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET")
-	if accessKey != "" && secretKey != "" {
+	roleArn := os.Getenv("ALIBABA_CLOUD_ROLE_ARN")
+	oidcProviderArn := os.Getenv("ALIBABA_CLOUD_OIDC_PROVIDER_ARN")
+	oidcTokenFile := os.Getenv("ALIBABA_CLOUD_OIDC_TOKEN_FILE")
+
+	switch {
+	case roleArn != "" && oidcProviderArn != "" && oidcTokenFile != "":
+		c, gerr := openapicred.NewCredential(new(openapicred.Config).
+			SetType("oidc_role_arn").
+			SetAccessKeyId(accessKey).
+			SetAccessKeySecret(secretKey).
+			SetRoleArn(roleArn).
+			SetOIDCProviderArn(oidcProviderArn).
+			SetOIDCTokenFilePath(oidcTokenFile).
+			SetRoleSessionName("multica").
+			SetRoleSessionExpiration(3600))
+		cfg = cfg.WithCredentialsProvider(credentials.CredentialsProviderFunc(func(ctx context.Context) (credentials.Credentials, error) {
+			if gerr != nil {
+				return credentials.Credentials{}, gerr
+			}
+			cred, err := c.GetCredential()
+			if err != nil {
+				return credentials.Credentials{}, err
+			}
+			return credentials.Credentials{
+				AccessKeyID:     derefStr(cred.AccessKeyId),
+				AccessKeySecret: derefStr(cred.AccessKeySecret),
+				SecurityToken:   derefStr(cred.SecurityToken),
+			}, nil
+		}))
+	case accessKey != "" && secretKey != "":
 		cfg = cfg.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey))
-	} else {
+	default:
 		cfg = cfg.WithCredentialsProvider(credentials.NewEcsRoleCredentialsProvider())
 	}
 
@@ -218,6 +249,13 @@ func (o *OSSStorage) Upload(ctx context.Context, key string, data []byte, conten
 		return "", fmt.Errorf("oss PutObject: %w", err)
 	}
 	return o.uploadedURL(key), nil
+}
+
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func (o *OSSStorage) uploadedURL(key string) string {

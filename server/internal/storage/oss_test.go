@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -185,6 +186,106 @@ func TestSignCDNURL_Format(t *testing.T) {
 	want := fmt.Sprintf("%x", md5.Sum([]byte(plain)))
 	if hash != want {
 		t.Errorf("hash = %q, want %q (plain: %q)", hash, want, plain)
+	}
+}
+
+// ---- derefStr ----
+
+func TestDerefStr_NilReturnsEmpty(t *testing.T) {
+	if got := derefStr(nil); got != "" {
+		t.Fatalf("derefStr(nil) = %q, want empty string", got)
+	}
+}
+
+func TestDerefStr_NonNilReturnsValue(t *testing.T) {
+	s := "hello"
+	if got := derefStr(&s); got != s {
+		t.Fatalf("derefStr(&%q) = %q, want %q", s, got, s)
+	}
+}
+
+// ---- NewOSSStorageFromEnv 凭证选择逻辑 ----
+
+func TestNewOSSStorageFromEnv_ReturnsNilWhenBucketMissing(t *testing.T) {
+	t.Setenv("OSS_BUCKET", "")
+	if got := NewOSSStorageFromEnv(); got != nil {
+		t.Fatal("OSS_BUCKET 未设置时应返回 nil")
+	}
+}
+
+func TestNewOSSStorageFromEnv_ReturnsNilWhenRegionMissing(t *testing.T) {
+	t.Setenv("OSS_BUCKET", "my-bucket")
+	t.Setenv("OSS_REGION", "")
+	if got := NewOSSStorageFromEnv(); got != nil {
+		t.Fatal("OSS_REGION 未设置时应返回 nil")
+	}
+}
+
+func TestNewOSSStorageFromEnv_RRSASelectedWhenAllVarsSet(t *testing.T) {
+	tokenFile := t.TempDir() + "/token"
+	os.WriteFile(tokenFile, []byte("tok"), 0600)
+
+	t.Setenv("OSS_BUCKET", "my-bucket")
+	t.Setenv("OSS_REGION", "cn-hangzhou")
+	t.Setenv("ALIBABA_CLOUD_ROLE_ARN", "acs:ram::1:role/R")
+	t.Setenv("ALIBABA_CLOUD_OIDC_PROVIDER_ARN", "acs:ram::1:oidc-provider/P")
+	t.Setenv("ALIBABA_CLOUD_OIDC_TOKEN_FILE", tokenFile)
+	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_ID", "")
+	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "")
+
+	got := NewOSSStorageFromEnv()
+	if got == nil {
+		t.Fatal("RRSA 环境变量全部设置时应返回非 nil OSSStorage")
+	}
+}
+
+func TestNewOSSStorageFromEnv_RRSATakesPriorityOverStaticKeys(t *testing.T) {
+	tokenFile := t.TempDir() + "/token"
+	os.WriteFile(tokenFile, []byte("tok"), 0600)
+
+	t.Setenv("OSS_BUCKET", "my-bucket")
+	t.Setenv("OSS_REGION", "cn-hangzhou")
+	// 同时设置 RRSA 和静态 AK/SK，RRSA 应优先
+	t.Setenv("ALIBABA_CLOUD_ROLE_ARN", "acs:ram::1:role/R")
+	t.Setenv("ALIBABA_CLOUD_OIDC_PROVIDER_ARN", "acs:ram::1:oidc-provider/P")
+	t.Setenv("ALIBABA_CLOUD_OIDC_TOKEN_FILE", tokenFile)
+	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_ID", "ak")
+	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "sk")
+
+	got := NewOSSStorageFromEnv()
+	if got == nil {
+		t.Fatal("RRSA + 静态 AK/SK 同时设置时应返回非 nil OSSStorage")
+	}
+}
+
+func TestNewOSSStorageFromEnv_StaticCredsWhenNoRRSA(t *testing.T) {
+	t.Setenv("OSS_BUCKET", "my-bucket")
+	t.Setenv("OSS_REGION", "cn-hangzhou")
+	t.Setenv("ALIBABA_CLOUD_ROLE_ARN", "")
+	t.Setenv("ALIBABA_CLOUD_OIDC_PROVIDER_ARN", "")
+	t.Setenv("ALIBABA_CLOUD_OIDC_TOKEN_FILE", "")
+	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_ID", "ak")
+	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "sk")
+
+	got := NewOSSStorageFromEnv()
+	if got == nil {
+		t.Fatal("仅设置静态 AK/SK 时应返回非 nil OSSStorage")
+	}
+}
+
+func TestNewOSSStorageFromEnv_PartialRRSAVarsFallsThrough(t *testing.T) {
+	t.Setenv("OSS_BUCKET", "my-bucket")
+	t.Setenv("OSS_REGION", "cn-hangzhou")
+	// 只设置 ROLE_ARN，缺少另外两个 RRSA 变量，应退回静态 AK/SK
+	t.Setenv("ALIBABA_CLOUD_ROLE_ARN", "acs:ram::1:role/R")
+	t.Setenv("ALIBABA_CLOUD_OIDC_PROVIDER_ARN", "")
+	t.Setenv("ALIBABA_CLOUD_OIDC_TOKEN_FILE", "")
+	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_ID", "ak")
+	t.Setenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "sk")
+
+	got := NewOSSStorageFromEnv()
+	if got == nil {
+		t.Fatal("RRSA 变量不完整时应退回静态 AK/SK，返回非 nil OSSStorage")
 	}
 }
 
