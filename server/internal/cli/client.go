@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -446,22 +447,28 @@ func (c *APIClient) UploadFileWithURL(ctx context.Context, fileData []byte, file
 // The URL may be absolute (a signed CloudFront/S3 URL) or relative
 // (a server-relative path like "/uploads/...") depending on how the
 // server is configured. Relative URLs are resolved against the client's
-// BaseURL and sent with the standard auth headers; absolute URLs are
-// used as-is so that their query-string signatures are not disturbed.
+// BaseURL and sent with the standard auth headers. Absolute URLs that
+// share the same host as BaseURL are also sent with auth headers (covers
+// self-hosted deployments where LOCAL_UPLOAD_BASE_URL points back to the
+// API server). Absolute URLs on a different host are used as-is so that
+// query-string signatures on signed CDN/S3 URLs are not disturbed.
 func (c *APIClient) DownloadFile(ctx context.Context, downloadURL string) ([]byte, error) {
 	isRelative := !strings.HasPrefix(downloadURL, "http://") && !strings.HasPrefix(downloadURL, "https://")
+	needsAuth := isRelative
 	if isRelative {
 		if c.BaseURL == "" {
 			return nil, fmt.Errorf("download URL %q is relative but client has no BaseURL", downloadURL)
 		}
 		downloadURL = c.BaseURL + downloadURL
+	} else if c.BaseURL != "" && sameHost(c.BaseURL, downloadURL) {
+		needsAuth = true
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	if isRelative {
+	if needsAuth {
 		c.setHeaders(req)
 	}
 
@@ -497,4 +504,18 @@ func (c *APIClient) HealthCheck(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("health check returned %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	return strings.TrimSpace(string(data)), nil
+}
+
+// sameHost reports whether a and b have identical host+port components.
+// Both inputs must be valid absolute URLs; returns false on any parse error.
+func sameHost(a, b string) bool {
+	ua, err := url.Parse(a)
+	if err != nil {
+		return false
+	}
+	ub, err := url.Parse(b)
+	if err != nil {
+		return false
+	}
+	return ua.Host == ub.Host
 }

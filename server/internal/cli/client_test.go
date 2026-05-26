@@ -212,6 +212,27 @@ func TestDownloadFile(t *testing.T) {
 		}
 	})
 
+	t.Run("absolute URL on same host as BaseURL is sent with auth headers", func(t *testing.T) {
+		var gotAuth string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotAuth = r.Header.Get("Authorization")
+			w.Write([]byte("file-data"))
+		}))
+		defer srv.Close()
+
+		client := NewAPIClient(srv.URL, "", "test-token")
+		data, err := client.DownloadFile(context.Background(), srv.URL+"/uploads/workspaces/abc/file.png")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(data) != "file-data" {
+			t.Errorf("unexpected body: %q", string(data))
+		}
+		if gotAuth != "Bearer test-token" {
+			t.Errorf("expected Authorization Bearer test-token, got %q", gotAuth)
+		}
+	})
+
 	t.Run("relative URL with empty BaseURL returns a helpful error", func(t *testing.T) {
 		client := NewAPIClient("", "", "test-token")
 		_, err := client.DownloadFile(context.Background(), "/uploads/x.md")
