@@ -273,6 +273,7 @@ export function MyIssuesPage() {
                 childProgressMap={childProgressMap}
                 myIssuesScope={scope}
                 myIssuesFilter={filter}
+                sort={sort}
               />
             ) : viewMode === "swimlane" ? (
               <SwimLaneView
@@ -284,6 +285,7 @@ export function MyIssuesPage() {
                 childProgressMap={childProgressMap}
                 myIssuesScope={scope}
                 myIssuesFilter={filter}
+                sort={sort}
               />
             ) : (
               <ListView
@@ -292,6 +294,7 @@ export function MyIssuesPage() {
                 childProgressMap={childProgressMap}
                 myIssuesScope={scope}
                 myIssuesFilter={filter}
+                sort={sort}
               />
             )}
           </div>

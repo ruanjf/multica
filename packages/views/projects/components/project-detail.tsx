@@ -18,6 +18,7 @@ import {
   projectGanttIssuesOptions,
   childIssueProgressOptions,
   type AssigneeGroupedIssuesFilter,
+  type IssueSortParam,
   type MyIssuesFilter,
 } from "@multica/core/issues/queries";
 import { useUpdateIssue } from "@multica/core/issues/mutations";
@@ -116,6 +117,7 @@ function ProjectIssuesContent({
   assigneeGroupFilter,
   scope,
   filter,
+  sort,
   ganttIssues,
 }: {
   projectId: string;
@@ -125,6 +127,7 @@ function ProjectIssuesContent({
   assigneeGroupFilter?: AssigneeGroupedIssuesFilter;
   scope: string;
   filter: MyIssuesFilter;
+  sort?: IssueSortParam;
   ganttIssues: Issue[];
 }) {
   const { t } = useT("projects");
@@ -228,6 +231,7 @@ function ProjectIssuesContent({
           childProgressMap={childProgressMap}
           myIssuesScope={scope}
           myIssuesFilter={filter}
+          sort={sort}
           projectId={projectId}
         />
       )}
@@ -238,6 +242,7 @@ function ProjectIssuesContent({
           childProgressMap={childProgressMap}
           myIssuesScope={scope}
           myIssuesFilter={filter}
+          sort={sort}
           projectId={projectId}
         />
       )}
@@ -252,6 +257,7 @@ function ProjectIssuesContent({
           childProgressMap={childProgressMap}
           myIssuesScope={scope}
           myIssuesFilter={filter}
+          sort={sort}
           projectId={projectId}
         />
       )}
@@ -351,6 +357,7 @@ function ProjectIssuesSurface({
         assigneeGroupFilter={usesAssigneeBoard ? assigneeGroupFilter : undefined}
         scope={scope}
         filter={filter}
+        sort={sort}
         ganttIssues={ganttIssues}
       />
       <BatchActionToolbar />

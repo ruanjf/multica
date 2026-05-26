@@ -7,7 +7,7 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/
 import { Button } from "@multica/ui/components/ui/button";
 import type { Issue, IssueStatus } from "@multica/core/types";
 import { useLoadMoreByStatus } from "@multica/core/issues/mutations";
-import type { MyIssuesFilter } from "@multica/core/issues/queries";
+import type { IssueSortParam, MyIssuesFilter } from "@multica/core/issues/queries";
 import { useModalStore } from "@multica/core/modals";
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
 import { useIssueSelectionStore } from "@multica/core/issues/stores/selection-store";
@@ -24,6 +24,7 @@ export function ListView({
   childProgressMap = EMPTY_PROGRESS_MAP,
   myIssuesScope,
   myIssuesFilter,
+  sort,
   projectId,
 }: {
   issues: Issue[];
@@ -32,6 +33,8 @@ export function ListView({
   /** When set, per-status load-more targets the scoped cache instead of the workspace one. */
   myIssuesScope?: string;
   myIssuesFilter?: MyIssuesFilter;
+  /** Must match the sort the page queried with — embedded in the cache key. */
+  sort?: IssueSortParam;
   /** When set, the per-section "+" pre-fills the project on the create form. */
   projectId?: string;
 }) {
@@ -86,6 +89,7 @@ export function ListView({
             issues={issuesByStatus.get(status) ?? []}
             childProgressMap={childProgressMap}
             myIssuesOpts={myIssuesOpts}
+            sort={sort}
             projectId={projectId}
           />
         ))}
@@ -99,12 +103,14 @@ function StatusAccordionItem({
   issues,
   childProgressMap,
   myIssuesOpts,
+  sort,
   projectId,
 }: {
   status: IssueStatus;
   issues: Issue[];
   childProgressMap: Map<string, ChildProgress>;
   myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
+  sort?: IssueSortParam;
   projectId?: string;
 }) {
   const { t } = useT("issues");
@@ -114,6 +120,7 @@ function StatusAccordionItem({
   const { loadMore, hasMore, isLoading, total } = useLoadMoreByStatus(
     status,
     myIssuesOpts,
+    sort,
   );
 
   const issueIds = issues.map((i) => i.id);

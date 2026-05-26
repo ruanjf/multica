@@ -23,7 +23,7 @@ import type { UpdateIssueRequest } from "@multica/core/types";
 import { useViewStore, useViewStoreApi } from "@multica/core/issues/stores/view-store-context";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useLoadMoreByStatus } from "@multica/core/issues/mutations";
-import type { MyIssuesFilter } from "@multica/core/issues/queries";
+import type { IssueSortParam, MyIssuesFilter } from "@multica/core/issues/queries";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -161,6 +161,7 @@ export function SwimLaneView({
   childProgressMap = EMPTY_PROGRESS_MAP,
   myIssuesScope,
   myIssuesFilter,
+  sort,
   projectId,
 }: {
   issues: Issue[];
@@ -179,6 +180,8 @@ export function SwimLaneView({
   childProgressMap?: Map<string, ChildProgress>;
   myIssuesScope?: string;
   myIssuesFilter?: MyIssuesFilter;
+  /** Must match the sort the page queried with — embedded in the cache key. */
+  sort?: IssueSortParam;
   /** Pre-fills `project_id` on the create form for the in-cell "+" button. */
   projectId?: string;
 }) {
@@ -748,6 +751,7 @@ export function SwimLaneView({
             sortedStatuses={sortedStatuses}
             gridStyle={gridStyle}
             myIssuesOpts={myIssuesOpts}
+            sort={sort}
           />
         </div>
         </div>
@@ -1031,10 +1035,12 @@ function SwimLaneLoadMoreRow({
   sortedStatuses,
   gridStyle,
   myIssuesOpts,
+  sort,
 }: {
   sortedStatuses: IssueStatus[];
   gridStyle: React.CSSProperties;
   myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
+  sort?: IssueSortParam;
 }) {
   return (
     <div style={gridStyle}>
@@ -1043,6 +1049,7 @@ function SwimLaneLoadMoreRow({
           key={status}
           status={status}
           myIssuesOpts={myIssuesOpts}
+          sort={sort}
         />
       ))}
     </div>
@@ -1052,11 +1059,13 @@ function SwimLaneLoadMoreRow({
 function SwimLaneLoadMoreCell({
   status,
   myIssuesOpts,
+  sort,
 }: {
   status: IssueStatus;
   myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
+  sort?: IssueSortParam;
 }) {
-  const { loadMore, hasMore, isLoading } = useLoadMoreByStatus(status, myIssuesOpts);
+  const { loadMore, hasMore, isLoading } = useLoadMoreByStatus(status, myIssuesOpts, sort);
   if (!hasMore) return <div />;
   return <InfiniteScrollSentinel onVisible={loadMore} loading={isLoading} />;
 }

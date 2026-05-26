@@ -80,7 +80,7 @@ vi.mock("@multica/core/issues/config", () => ({
 // as no-op divs and don't pull IntersectionObserver into JSDOM.
 const mockLoadMore = vi.fn();
 const useLoadMoreByStatusMock = vi.fn(
-  (_status: string, _opts?: unknown) => ({
+  (_status: string, _opts?: unknown, _sort?: unknown) => ({
     total: 0,
     loaded: 0,
     hasMore: false,
@@ -92,8 +92,8 @@ vi.mock("@multica/core/issues/mutations", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@multica/core/issues/mutations")>();
   return {
     ...actual,
-    useLoadMoreByStatus: (status: string, opts?: unknown) =>
-      useLoadMoreByStatusMock(status, opts),
+    useLoadMoreByStatus: (status: string, opts?: unknown, sort?: unknown) =>
+      useLoadMoreByStatusMock(status, opts, sort),
   };
 });
 

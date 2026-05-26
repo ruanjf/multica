@@ -5,6 +5,7 @@ import {
   issueKeys,
   ISSUE_PAGE_SIZE,
   type AssigneeGroupedIssuesFilter,
+  type IssueSortParam,
   type MyIssuesFilter,
 } from "./queries";
 import {
@@ -58,33 +59,40 @@ export type ToggleIssueReactionVars = {
  * Paginate one status column into the cache. Works for both the workspace
  * issue list and per-scope My Issues lists (pass `myIssues` to target the
  * latter).
+ *
+ * `sort` must match the sort the consuming `useQuery` was called with —
+ * the query key embeds it (see `listSorted` / `myListSorted`), so a load-more
+ * with the wrong sort would patch a stale cache entry that nobody is
+ * subscribed to. It is also threaded into the API request so the appended
+ * page lines up with the server-side ordering of the existing items.
  */
 export function useLoadMoreByStatus(
   status: IssueStatus,
   myIssues?: { scope: string; filter: MyIssuesFilter },
+  sort?: IssueSortParam,
 ) {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
   const [isLoading, setIsLoading] = useState(false);
 
-  const prefixKey = myIssues
-    ? issueKeys.myList(wsId, myIssues.scope, myIssues.filter)
-    : issueKeys.list(wsId);
-  const queries = qc.getQueriesData<ListIssuesCache>({ queryKey: prefixKey });
-  const [activeKey, cache] = queries[0] ?? [undefined, undefined];
+  const activeKey = myIssues
+    ? issueKeys.myListSorted(wsId, myIssues.scope, myIssues.filter, sort)
+    : issueKeys.listSorted(wsId, sort);
+  const cache = qc.getQueryData<ListIssuesCache>(activeKey);
   const bucket = cache?.byStatus[status];
   const loaded = bucket?.issues.length ?? 0;
   const total = bucket?.total ?? 0;
   const hasMore = loaded < total;
 
   const loadMore = useCallback(async () => {
-    if (isLoading || !hasMore || !activeKey) return;
+    if (isLoading || !hasMore) return;
     setIsLoading(true);
     try {
       const res = await api.listIssues({
         status,
         limit: ISSUE_PAGE_SIZE,
         offset: loaded,
+        ...sort,
         ...myIssues?.filter,
       });
       qc.setQueryData<ListIssuesCache>(activeKey, (old) => {
@@ -100,15 +108,23 @@ export function useLoadMoreByStatus(
     } finally {
       setIsLoading(false);
     }
-  }, [qc, activeKey, status, loaded, hasMore, isLoading, myIssues?.filter]);
+  }, [qc, activeKey, status, loaded, hasMore, isLoading, myIssues?.filter, sort]);
 
   return { loadMore, hasMore, isLoading, total };
 }
 
+/**
+ * Paginate one assignee-grouped board column into the cache. `queryKey`
+ * already pins the active cache entry (it's the same object the consuming
+ * `useQuery` registered), so the cache lookup and `setQueryData` target the
+ * right row. `sort` is threaded into the API request so the appended page
+ * lines up with the server-side ordering of the existing items.
+ */
 export function useLoadMoreByAssigneeGroup(
   group: Pick<IssueAssigneeGroup, "id" | "assignee_type" | "assignee_id">,
   queryKey: QueryKey,
   filter: AssigneeGroupedIssuesFilter,
+  sort?: IssueSortParam,
 ) {
   const qc = useQueryClient();
   const [isLoading, setIsLoading] = useState(false);
@@ -127,6 +143,7 @@ export function useLoadMoreByAssigneeGroup(
         group_by: "assignee",
         limit: ISSUE_PAGE_SIZE,
         offset: loaded,
+        ...sort,
         ...filter,
         group_assignee_type: group.assignee_type ?? "none",
         group_assignee_id: group.assignee_id ?? undefined,
@@ -152,7 +169,7 @@ export function useLoadMoreByAssigneeGroup(
     } finally {
       setIsLoading(false);
     }
-  }, [filter, group.assignee_id, group.assignee_type, hasMore, isLoading, loaded, qc, queryKey]);
+  }, [filter, group.assignee_id, group.assignee_type, hasMore, isLoading, loaded, qc, queryKey, sort]);
 
   return { loadMore, hasMore, isLoading, total };
 }
