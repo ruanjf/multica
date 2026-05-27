@@ -11,6 +11,7 @@ import { handleAppShortcut } from "./keyboard-shortcuts";
 import { installNavigationGestures } from "./navigation-gestures";
 import { getAppVersion } from "./app-version";
 import { loadRuntimeConfig } from "./runtime-config-loader";
+import { applyAuthRequestHeaders } from "./auth-request-headers";
 import type { RuntimeConfigResult } from "../shared/runtime-config";
 
 // Bundled icon used for dock/taskbar branding. macOS/Windows production
@@ -171,17 +172,14 @@ function createWindow(): void {
   mainWindow.webContents.session.webRequest.onBeforeSendHeaders(
     { urls: ["wss://*/*", "ws://*/*", "https://*/*", "http://*/*"] },
     (details, callback) => {
-      const reqHeaders = { ...details.requestHeaders };
-
-      if (details.url.startsWith("wss://") || details.url.startsWith("ws://")) {
-        delete reqHeaders["Origin"];
-      }
-
-      if (currentAuthToken && apiBaseUrl && details.url.startsWith(apiBaseUrl) && !reqHeaders["Authorization"]) {
-        reqHeaders["Authorization"] = `Bearer ${currentAuthToken}`;
-      }
-
-      callback({ requestHeaders: reqHeaders });
+      callback({
+        requestHeaders: applyAuthRequestHeaders(
+          details.requestHeaders,
+          details.url,
+          currentAuthToken,
+          apiBaseUrl,
+        ),
+      });
     },
   );
 
