@@ -64,7 +64,7 @@ interface CommentCardProps {
    */
   canModerate?: boolean;
   onReply: (parentId: string, content: string, attachmentIds?: string[]) => Promise<void>;
-  onEdit: (commentId: string, content: string, attachmentIds?: string[]) => Promise<void>;
+  onEdit: (commentId: string, content: string, attachmentIds: string[]) => Promise<void>;
   onDelete: (commentId: string) => void;
   onToggleReaction: (commentId: string, emoji: string) => void;
   /** Toggle the resolved state on the thread root. Only invoked for root entries. */
@@ -199,6 +199,118 @@ function initialStandaloneAttachmentIds(entry: TimelineEntry): Set<string> {
 }
 
 // ---------------------------------------------------------------------------
+// Shared edit-attachment state hook
+// ---------------------------------------------------------------------------
+
+function useEditAttachmentState(
+  issueId: string,
+  entry: TimelineEntry,
+  onEdit: (commentId: string, content: string, attachmentIds: string[]) => Promise<void>,
+) {
+  const { t } = useT("issues");
+  const { uploadWithToast } = useFileUpload(api);
+  const [editing, setEditing] = useState(false);
+  const editorRef = useRef<ContentEditorRef>(null);
+  const cancelledRef = useRef(false);
+  const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
+  const [retainedStandaloneIds, setRetainedStandaloneIds] = useState<Set<string> | null>(null);
+
+  const editorAttachments = pendingAttachments.length > 0
+    ? [...(entry.attachments ?? []), ...pendingAttachments]
+    : entry.attachments;
+
+  const handleUpload = useCallback(async (file: File) => {
+    const result = await uploadWithToast(file, { issueId });
+    if (result) setPendingAttachments((prev) => [...prev, result]);
+    return result;
+  }, [uploadWithToast, issueId]);
+
+  const { isDragOver, dropZoneProps } = useFileDropZone({
+    onDrop: (files) => files.forEach((f) => editorRef.current?.uploadFile(f)),
+    enabled: editing,
+  });
+
+  const draftKey = `edit:${issueId}:${entry.id}` as const;
+  const getDraft = useCommentDraftStore.getState().getDraft;
+  const setDraft = useCommentDraftStore((s) => s.setDraft);
+  const clearDraft = useCommentDraftStore((s) => s.clearDraft);
+
+  const initialValue = editing
+    ? (getDraft(draftKey) ?? entry.content ?? "")
+    : (entry.content ?? "");
+
+  const standaloneEditAttachments = (entry.attachments ?? []).filter((a) =>
+    retainedStandaloneIds?.has(a.id),
+  );
+
+  const resetState = () => {
+    setEditing(false);
+    setPendingAttachments([]);
+    setRetainedStandaloneIds(null);
+    clearDraft(draftKey);
+  };
+
+  const startEdit = () => {
+    cancelledRef.current = false;
+    setRetainedStandaloneIds(initialStandaloneAttachmentIds(entry));
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    cancelledRef.current = true;
+    resetState();
+  };
+
+  const saveEdit = async () => {
+    if (cancelledRef.current) return;
+    const trimmed = editorRef.current
+      ?.getMarkdown()
+      ?.replace(/(\n\s*)+$/, "")
+      .trim();
+    if (!trimmed) return;
+    const activeIds = collectActiveAttachmentIds(
+      trimmed,
+      [...(entry.attachments ?? []), ...pendingAttachments],
+      retainedStandaloneIds,
+    );
+    const attachmentsChanged = !sameIdSet(activeIds, (entry.attachments ?? []).map((a) => a.id));
+    if (trimmed === (entry.content ?? "").trim() && !attachmentsChanged) {
+      resetState();
+      return;
+    }
+    try {
+      await onEdit(entry.id, trimmed, activeIds);
+      resetState();
+    } catch (err) {
+      toast.error(
+        err instanceof Error && err.message
+          ? err.message
+          : t(($) => $.comment.update_failed),
+      );
+    }
+  };
+
+  return {
+    editing,
+    editorRef,
+    editorAttachments,
+    handleUpload,
+    isDragOver,
+    dropZoneProps,
+    draftKey,
+    setDraft,
+    clearDraft,
+    initialValue,
+    standaloneEditAttachments,
+    retainedStandaloneIds,
+    setRetainedStandaloneIds,
+    startEdit,
+    cancelEdit,
+    saveEdit,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Single comment row (used for both parent and replies within the same Card)
 // ---------------------------------------------------------------------------
 
@@ -215,113 +327,24 @@ function CommentRow({
   entry: TimelineEntry;
   currentUserId?: string;
   canModerate?: boolean;
-  onEdit: (commentId: string, content: string, attachmentIds?: string[]) => Promise<void>;
+  onEdit: (commentId: string, content: string, attachmentIds: string[]) => Promise<void>;
   onDelete: (commentId: string) => void;
   onToggleReaction: (commentId: string, emoji: string) => void;
 }) {
   const { t } = useT("issues");
   const timeAgo = useTimeAgo();
   const { getActorName } = useActorName();
-  const [editing, setEditing] = useState(false);
-  const editEditorRef = useRef<ContentEditorRef>(null);
-  const cancelledRef = useRef(false);
-  const { uploadWithToast } = useFileUpload(api);
-  // Pending uploads from this edit pass. Merged with `entry.attachments` so
-  // newly uploaded text/code files get an Eye button in the edit-mode editor;
-  // the active subset is sent as `attachmentIds` on save so the server binds
-  // them to the comment (otherwise they'd remain orphaned at the issue level
-  // and disappear after refresh).
-  const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
-  const [retainedStandaloneIds, setRetainedStandaloneIds] = useState<Set<string> | null>(null);
-  const editorAttachments = pendingAttachments.length > 0
-    ? [...(entry.attachments ?? []), ...pendingAttachments]
-    : entry.attachments;
-  const handleEditUpload = useCallback(async (file: File) => {
-    const result = await uploadWithToast(file, { issueId });
-    if (result) setPendingAttachments((prev) => [...prev, result]);
-    return result;
-  }, [uploadWithToast, issueId]);
-  const { isDragOver, dropZoneProps } = useFileDropZone({
-    onDrop: (files) => files.forEach((f) => editEditorRef.current?.uploadFile(f)),
-    enabled: editing,
-  });
 
-  // Edit-mode draft: virtualization unmounts the card when it scrolls out
-  // of viewport, taking the in-progress edit with it. Persist via store
-  // so a scroll-away + scroll-back round-trip restores the user's edits.
-  // Key includes issueId so two issues with the same comment id (impossible
-  // but defensive) don't collide; cleared on cancel and on save.
-  const editDraftKey = `edit:${issueId}:${entry.id}` as const;
-  const getEditDraft = useCommentDraftStore.getState().getDraft;
-  const setEditDraft = useCommentDraftStore((s) => s.setDraft);
-  const clearEditDraft = useCommentDraftStore((s) => s.clearDraft);
-  // Read the snapshot once when the edit pass mounts; ContentEditor only
-  // honors `defaultValue` on mount, so a live store subscription here would
-  // cause an extra unmount/remount on every keystroke.
-  const editInitialValue = editing
-    ? (getEditDraft(editDraftKey) ?? entry.content ?? "")
-    : (entry.content ?? "");
+  const edit = useEditAttachmentState(issueId, entry, onEdit);
 
   const isOwn = entry.actor_type === "member" && entry.actor_id === currentUserId;
   const canEditEntry = isOwn || (canModerate && entry.actor_type === "member");
   const canDeleteEntry = isOwn || canModerate;
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const startEdit = () => {
-    cancelledRef.current = false;
-    setRetainedStandaloneIds(initialStandaloneAttachmentIds(entry));
-    setEditing(true);
-  };
-
-  const cancelEdit = () => {
-    cancelledRef.current = true;
-    setEditing(false);
-    setPendingAttachments([]);
-    setRetainedStandaloneIds(null);
-    clearEditDraft(editDraftKey);
-  };
-
-  const saveEdit = async () => {
-    if (cancelledRef.current) return;
-    const trimmed = editEditorRef.current
-      ?.getMarkdown()
-      ?.replace(/(\n\s*)+$/, "")
-      .trim();
-    if (!trimmed) return;
-    const activeIds = collectActiveAttachmentIds(
-      trimmed,
-      [...(entry.attachments ?? []), ...pendingAttachments],
-      retainedStandaloneIds,
-    );
-    const attachmentsChanged = !sameIdSet(activeIds, (entry.attachments ?? []).map((a) => a.id));
-    if (trimmed === (entry.content ?? "").trim() && !attachmentsChanged) {
-      setEditing(false);
-      setPendingAttachments([]);
-      setRetainedStandaloneIds(null);
-      clearEditDraft(editDraftKey);
-      return;
-    }
-    try {
-      await onEdit(entry.id, trimmed, activeIds);
-      setEditing(false);
-      setPendingAttachments([]);
-      setRetainedStandaloneIds(null);
-      clearEditDraft(editDraftKey);
-    } catch (err) {
-      toast.error(
-        err instanceof Error && err.message
-          ? err.message
-          : t(($) => $.comment.update_failed),
-      );
-    }
-  };
-
   const reactions = entry.reactions ?? [];
   const contentText = entry.content ?? "";
   const isLongContent = contentText.length > 500 || contentText.split("\n").length > 8;
-  const standaloneEditAttachments = (entry.attachments ?? []).filter((attachment) =>
-    retainedStandaloneIds?.has(attachment.id),
-  );
 
   return (
     <div className="py-3">
@@ -368,7 +391,7 @@ function CommentRow({
                 <>
                   <DropdownMenuSeparator />
                   {canEditEntry && (
-                    <DropdownMenuItem onClick={startEdit}>
+                    <DropdownMenuItem onClick={edit.startEdit}>
                       <Pencil className="h-3.5 w-3.5" />
                       {t(($) => $.comment.edit_action)}
                     </DropdownMenuItem>
@@ -392,36 +415,36 @@ function CommentRow({
         </div>
       </div>
 
-      {editing ? (
+      {edit.editing ? (
         <div
-          {...dropZoneProps}
+          {...edit.dropZoneProps}
           className="relative mt-1.5 pl-8"
-          onKeyDown={(e) => { if (e.key === "Escape") cancelEdit(); }}
+          onKeyDown={(e) => { if (e.key === "Escape") edit.cancelEdit(); }}
         >
           <div className="text-sm leading-relaxed">
             <ContentEditor
-              ref={editEditorRef}
-              defaultValue={editInitialValue}
+              ref={edit.editorRef}
+              defaultValue={edit.initialValue}
               placeholder={t(($) => $.comment.edit_placeholder)}
               onUpdate={(md) => {
-                if (md.trim().length > 0) setEditDraft(editDraftKey, md);
-                else clearEditDraft(editDraftKey);
+                if (md.trim().length > 0) edit.setDraft(edit.draftKey, md);
+                else edit.clearDraft(edit.draftKey);
               }}
-              onSubmit={saveEdit}
-              onUploadFile={handleEditUpload}
+              onSubmit={edit.saveEdit}
+              onUploadFile={edit.handleUpload}
               debounceMs={100}
               currentIssueId={issueId}
-              attachments={editorAttachments}
+              attachments={edit.editorAttachments}
             />
           </div>
           <div className="flex items-center justify-between mt-2">
             <div className="flex min-w-0 flex-1 flex-col gap-1">
-              {standaloneEditAttachments.length > 0 && (
+              {edit.standaloneEditAttachments.length > 0 && (
                 <AttachmentList
-                  attachments={standaloneEditAttachments}
+                  attachments={edit.standaloneEditAttachments}
                   className="max-w-full"
                   onRemove={(attachmentId) =>
-                    setRetainedStandaloneIds((ids) => {
+                    edit.setRetainedStandaloneIds((ids) => {
                       const next = new Set(ids ?? []);
                       next.delete(attachmentId);
                       return next;
@@ -432,15 +455,15 @@ function CommentRow({
               <FileUploadButton
                 size="sm"
                 multiple
-                onSelect={(file) => editEditorRef.current?.uploadFile(file)}
+                onSelect={(file) => edit.editorRef.current?.uploadFile(file)}
               />
             </div>
             <div className="flex items-center gap-2">
-              <Button size="sm" variant="ghost" onClick={cancelEdit}>{t(($) => $.comment.cancel_edit)}</Button>
-              <Button size="sm" variant="outline" onClick={saveEdit}>{t(($) => $.comment.save_action)}</Button>
+              <Button size="sm" variant="ghost" onClick={edit.cancelEdit}>{t(($) => $.comment.cancel_edit)}</Button>
+              <Button size="sm" variant="outline" onClick={edit.saveEdit}>{t(($) => $.comment.save_action)}</Button>
             </div>
           </div>
-          {isDragOver && <FileDropOverlay />}
+          {edit.isDragOver && <FileDropOverlay />}
         </div>
       ) : (
         <>
@@ -483,100 +506,18 @@ function CommentCardImpl({
   const { t } = useT("issues");
   const timeAgo = useTimeAgo();
   const { getActorName } = useActorName();
-  const { uploadWithToast } = useFileUpload(api);
   const isCollapsed = useCommentCollapseStore((s) => s.isCollapsed(issueId, entry.id));
   const toggleCollapse = useCommentCollapseStore((s) => s.toggle);
   const open = !isCollapsed;
   const handleOpenChange = useCallback((_open: boolean) => toggleCollapse(issueId, entry.id), [toggleCollapse, issueId, entry.id]);
-  const [editing, setEditing] = useState(false);
-  const editEditorRef = useRef<ContentEditorRef>(null);
-  const cancelledRef = useRef(false);
-  // Pending uploads from the root-comment edit pass — same rationale as CommentRow.
-  const [parentPendingAttachments, setParentPendingAttachments] = useState<Attachment[]>([]);
-  const [parentRetainedStandaloneIds, setParentRetainedStandaloneIds] = useState<Set<string> | null>(null);
-  const parentEditorAttachments = parentPendingAttachments.length > 0
-    ? [...(entry.attachments ?? []), ...parentPendingAttachments]
-    : entry.attachments;
-  const handleParentEditUpload = useCallback(async (file: File) => {
-    const result = await uploadWithToast(file, { issueId });
-    if (result) setParentPendingAttachments((prev) => [...prev, result]);
-    return result;
-  }, [uploadWithToast, issueId]);
-  const { isDragOver: parentDragOver, dropZoneProps: parentDropZoneProps } = useFileDropZone({
-    onDrop: (files) => files.forEach((f) => editEditorRef.current?.uploadFile(f)),
-    enabled: editing,
-  });
 
-  // Edit-mode draft (root comment). Same rationale as CommentRow's draft.
-  const parentEditDraftKey = `edit:${issueId}:${entry.id}` as const;
-  const getParentEditDraft = useCommentDraftStore.getState().getDraft;
-  const setParentEditDraft = useCommentDraftStore((s) => s.setDraft);
-  const clearParentEditDraft = useCommentDraftStore((s) => s.clearDraft);
-  const parentEditInitialValue = editing
-    ? (getParentEditDraft(parentEditDraftKey) ?? entry.content ?? "")
-    : (entry.content ?? "");
+  const edit = useEditAttachmentState(issueId, entry, onEdit);
 
   const isOwn = entry.actor_type === "member" && entry.actor_id === currentUserId;
-  // Author-only edit is the same as before; admins additionally get edit
-  // *and* delete on member-authored comments, plus delete on agent-authored
-  // ones. Edit on agent comments is intentionally never offered — agents
-  // own their own outputs.
   const canEditEntry = isOwn || (canModerate && entry.actor_type === "member");
   const canDeleteEntry = isOwn || canModerate;
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const startEdit = () => {
-    cancelledRef.current = false;
-    setParentRetainedStandaloneIds(initialStandaloneAttachmentIds(entry));
-    setEditing(true);
-  };
-
-  const cancelEdit = () => {
-    cancelledRef.current = true;
-    setEditing(false);
-    setParentPendingAttachments([]);
-    setParentRetainedStandaloneIds(null);
-    clearParentEditDraft(parentEditDraftKey);
-  };
-
-  const saveEdit = async () => {
-    if (cancelledRef.current) return;
-    const trimmed = editEditorRef.current
-      ?.getMarkdown()
-      ?.replace(/(\n\s*)+$/, "")
-      .trim();
-    if (!trimmed) return;
-    const activeIds = collectActiveAttachmentIds(
-      trimmed,
-      [...(entry.attachments ?? []), ...parentPendingAttachments],
-      parentRetainedStandaloneIds,
-    );
-    const attachmentsChanged = !sameIdSet(activeIds, (entry.attachments ?? []).map((a) => a.id));
-    if (trimmed === (entry.content ?? "").trim() && !attachmentsChanged) {
-      setEditing(false);
-      setParentPendingAttachments([]);
-      setParentRetainedStandaloneIds(null);
-      clearParentEditDraft(parentEditDraftKey);
-      return;
-    }
-    try {
-      await onEdit(entry.id, trimmed, activeIds);
-      setEditing(false);
-      setParentPendingAttachments([]);
-      setParentRetainedStandaloneIds(null);
-      clearParentEditDraft(parentEditDraftKey);
-    } catch (err) {
-      toast.error(
-        err instanceof Error && err.message
-          ? err.message
-          : t(($) => $.comment.update_failed),
-      );
-    }
-  };
-
-  // The parent precomputes the flat thread (using collectThreadReplies),
-  // memoizes by thread, and stabilizes the array reference, so we render
-  // straight from `replies` instead of re-walking the graph on every render.
   const allNestedReplies = replies;
 
   const replyCount = allNestedReplies.length;
@@ -584,9 +525,6 @@ function CommentCardImpl({
   const reactions = entry.reactions ?? [];
   const contentText = entry.content ?? "";
   const isLongContent = contentText.length > 500 || contentText.split("\n").length > 8;
-  const parentStandaloneEditAttachments = (entry.attachments ?? []).filter((attachment) =>
-    parentRetainedStandaloneIds?.has(attachment.id),
-  );
 
   const isHighlighted = highlightedCommentId === entry.id;
 
@@ -685,7 +623,7 @@ function CommentCardImpl({
                     <>
                       <DropdownMenuSeparator />
                       {canEditEntry && (
-                        <DropdownMenuItem onClick={startEdit}>
+                        <DropdownMenuItem onClick={edit.startEdit}>
                           <Pencil className="h-3.5 w-3.5" />
                           {t(($) => $.comment.edit_action)}
                         </DropdownMenuItem>
@@ -716,36 +654,36 @@ function CommentCardImpl({
         <CollapsibleContent>
           {/* Parent comment body */}
           <div className="px-4 pb-3">
-            {editing ? (
+            {edit.editing ? (
               <div
-                {...parentDropZoneProps}
+                {...edit.dropZoneProps}
                 className="relative pl-10"
-                onKeyDown={(e) => { if (e.key === "Escape") cancelEdit(); }}
+                onKeyDown={(e) => { if (e.key === "Escape") edit.cancelEdit(); }}
               >
                 <div className="text-sm leading-relaxed">
                   <ContentEditor
-                    ref={editEditorRef}
-                    defaultValue={parentEditInitialValue}
+                    ref={edit.editorRef}
+                    defaultValue={edit.initialValue}
                     placeholder={t(($) => $.comment.edit_placeholder)}
                     onUpdate={(md) => {
-                      if (md.trim().length > 0) setParentEditDraft(parentEditDraftKey, md);
-                      else clearParentEditDraft(parentEditDraftKey);
+                      if (md.trim().length > 0) edit.setDraft(edit.draftKey, md);
+                      else edit.clearDraft(edit.draftKey);
                     }}
-                    onSubmit={saveEdit}
-                    onUploadFile={handleParentEditUpload}
+                    onSubmit={edit.saveEdit}
+                    onUploadFile={edit.handleUpload}
                     debounceMs={100}
                     currentIssueId={issueId}
-                    attachments={parentEditorAttachments}
+                    attachments={edit.editorAttachments}
                   />
                 </div>
                 <div className="flex items-center justify-between mt-2">
                   <div className="flex min-w-0 flex-1 flex-col gap-1">
-                    {parentStandaloneEditAttachments.length > 0 && (
+                    {edit.standaloneEditAttachments.length > 0 && (
                       <AttachmentList
-                        attachments={parentStandaloneEditAttachments}
+                        attachments={edit.standaloneEditAttachments}
                         className="max-w-full"
                         onRemove={(attachmentId) =>
-                          setParentRetainedStandaloneIds((ids) => {
+                          edit.setRetainedStandaloneIds((ids) => {
                             const next = new Set(ids ?? []);
                             next.delete(attachmentId);
                             return next;
@@ -756,15 +694,15 @@ function CommentCardImpl({
                     <FileUploadButton
                       size="sm"
                       multiple
-                      onSelect={(file) => editEditorRef.current?.uploadFile(file)}
+                      onSelect={(file) => edit.editorRef.current?.uploadFile(file)}
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    <Button size="sm" variant="ghost" onClick={cancelEdit}>{t(($) => $.comment.cancel_edit)}</Button>
-                    <Button size="sm" variant="outline" onClick={saveEdit}>{t(($) => $.comment.save_action)}</Button>
+                    <Button size="sm" variant="ghost" onClick={edit.cancelEdit}>{t(($) => $.comment.cancel_edit)}</Button>
+                    <Button size="sm" variant="outline" onClick={edit.saveEdit}>{t(($) => $.comment.save_action)}</Button>
                   </div>
                 </div>
-                {parentDragOver && <FileDropOverlay />}
+                {edit.isDragOver && <FileDropOverlay />}
               </div>
             ) : (
               <>

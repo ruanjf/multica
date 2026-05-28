@@ -371,6 +371,7 @@ function SingleAgentLiveCard({ task, items, issueId, agentName }: SingleAgentLiv
             />
           )}
           <button
+            type="button"
             onClick={requestCancel}
             disabled={cancelling}
             className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-50"

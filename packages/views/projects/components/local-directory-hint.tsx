@@ -9,14 +9,14 @@ import { useLocalDaemonStatus } from "../../platform";
 import { useT } from "../../i18n";
 
 /**
- * Banner shown above the chat / comment composer when the issue's project
- * is pinned to a `local_directory` resource on **this** daemon. Tells the
- * user "starting an agent here will use {label} ({path}) in-place" so they
- * notice they are not getting an isolated git worktree.
+ * Banner shown at the top of the issue's Activity section when the
+ * project is pinned to a `local_directory` resource on **this** daemon.
+ * Tells the user "starting an agent here will use {label} ({path}) in-
+ * place" so they notice they are not getting an isolated git worktree.
  *
  * Rendered only on desktop: web has no daemon to compare against, so the
  * "this machine" check would always fail. Web users will see local_directory
- * resources read-only in the sidebar but no chat-input hint.
+ * resources read-only in the sidebar but no Activity-section hint.
  *
  * SSR-safe: the underlying hook reads `window.daemonAPI` defensively, so
  * server renders return null.
@@ -48,7 +48,7 @@ export function LocalDirectoryHint({
   if (matches.length === 0) return null;
 
   return (
-    <div className="mb-2 space-y-1 rounded-md border border-dashed bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+    <div className="mt-3 space-y-1 rounded-md border border-dashed bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
       {matches.map((resource) => {
         const ref = resource.resource_ref;
         const label = (ref.label || resource.label || ref.local_path).trim() ||

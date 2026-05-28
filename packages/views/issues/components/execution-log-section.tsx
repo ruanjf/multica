@@ -108,7 +108,7 @@ export function ExecutionLogSection({ issueId }: ExecutionLogSectionProps) {
     // Stable sort: failed first, cancelled second, completed last.
     // Within group: newest completed_at first (fall back to created_at
     // for malformed rows missing completed_at).
-    return [...past].sort((a, b) => {
+    return past.toSorted((a, b) => {
       const rankDiff =
         (PAST_STATUS_RANK[a.status] ?? 99) -
         (PAST_STATUS_RANK[b.status] ?? 99);
@@ -124,6 +124,7 @@ export function ExecutionLogSection({ issueId }: ExecutionLogSectionProps) {
   return (
     <div>
       <button
+        type="button"
         className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors mb-2 hover:bg-accent/70 ${
           open ? "" : "text-muted-foreground hover:text-foreground"
         }`}

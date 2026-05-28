@@ -1446,6 +1446,32 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
+			// Parent-issue resolution for quick-create tasks opened from
+			// "Add sub issue". The handler already verified workspace
+			// membership at submit time; here we re-fetch to pull the
+			// human-readable identifier (e.g. MUL-123) the agent will
+			// reference in the prompt. If the parent was deleted between
+			// submit and claim we surface the UUID anyway — the agent
+			// still passes `--parent <uuid>` and the server-side create
+			// will fail loud, which is a better outcome than silently
+			// dropping the sub-issue intent.
+			if qc.ParentIssueID != "" {
+				resp.ParentIssueID = qc.ParentIssueID
+				if parentUUID, err := util.ParseUUID(qc.ParentIssueID); err == nil {
+					if wsUUID, wsErr := util.ParseUUID(qc.WorkspaceID); wsErr == nil {
+						parent, perr := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+							ID:          parentUUID,
+							WorkspaceID: wsUUID,
+						})
+						if perr == nil && parent.ID.Valid {
+							if ws, werr := h.Queries.GetWorkspace(r.Context(), wsUUID); werr == nil {
+								resp.ParentIssueIdentifier = ws.IssuePrefix + "-" + strconv.Itoa(int(parent.Number))
+							}
+						}
+					}
+				}
+			}
+
 			// Squad-leader briefing injection for quick-create tasks. When
 			// the user picked a squad in the modal, the task runs on the
 			// squad's leader agent (resolved by the handler). Surface the
